@@ -120,7 +120,7 @@ server.registerTool(
 
 // ----------------------------------------------------
 // HERRAMIENTA 3: BUSCAR PEDIDOS (Por Fecha o #Número)
-// (Adaptada para no pedir PII)
+// (Sin cambios)
 // ----------------------------------------------------
 server.registerTool(
   "searchOrders",
@@ -212,7 +212,6 @@ server.registerTool(
 
       const rawOrders = data.data?.orders?.edges?.map((e: any) => e.node) ?? [];
 
-      // Mapeo de datos SIN PII
       const formattedOrders = rawOrders.map((o: any) => ({
         id: o.id,
         name: o.name,
@@ -246,15 +245,15 @@ server.registerTool(
 );
 
 // ----------------------------------------------------
-// HERRAMIENTA 4: OBTENER PEDIDO POR ID (Nueva)
-// (Adaptada para no pedir PII)
+// HERRAMIENTA 4: OBTENER PEDIDO POR ID (¡MODIFICADA!)
+// (Añadimos 'note_attributes' para ver datos del cliente)
 // ----------------------------------------------------
 server.registerTool(
   "getOrderById",
   {
     title: "Consultar pedido por ID de Shopify",
     description:
-      'Obtiene los detalles de un pedido específico usando su ID de GraphQL (ej. "gid://shopify/Order/12345").',
+      "Obtiene los detalles de un pedido específico, incluyendo notas del cliente (nombre, dirección).",
     inputSchema: {
       id: z
         .string()
@@ -262,7 +261,8 @@ server.registerTool(
           "El ID de GraphQL del pedido. Debe empezar con 'gid://shopify/Order/'."
         ),
     },
-    // El schema de salida es un solo pedido, o null si no se encuentra
+
+    // ----- CAMBIO 1: Schema de Salida actualizado -----
     outputSchema: {
       order: z
         .object({
@@ -281,6 +281,8 @@ server.registerTool(
               })
             )
             .nullable(),
+          // Campo NUEVO para los datos del cliente
+          customerNotes: z.record(z.string(), z.string().nullable()).nullable(),
         })
         .nullable(),
     },
@@ -297,13 +299,13 @@ server.registerTool(
             text: "Error: El servidor no está configurado para Shopify.",
           },
         ],
-        structuredContent: { order: null }, // Cumple el schema
+        structuredContent: { order: null },
       };
     }
 
     const apiUrl = `https://${storeUrl}/admin/api/2024-04/graphql.json`;
 
-    // Consulta GraphQL SIN PII
+    // ----- CAMBIO 2: Consulta GraphQL actualizada -----
     const gqlQuery = `
       query getOrderById($id: ID!) {
         order(id: $id) {
@@ -321,6 +323,11 @@ server.registerTool(
               }
             }
           }
+          # Pedimos las notas del pedido
+          noteAttributes {
+            name
+            value
+          }
         }
       }
     `;
@@ -334,7 +341,7 @@ server.registerTool(
         },
         body: JSON.stringify({
           query: gqlQuery,
-          variables: { id: id }, // Pasamos el ID
+          variables: { id: id },
         }),
       });
 
@@ -348,7 +355,7 @@ server.registerTool(
         );
       }
 
-      const o = data.data?.order; // 'o' es el pedido individual
+      const o = data.data?.order;
 
       if (!o) {
         return {
@@ -359,7 +366,17 @@ server.registerTool(
         };
       }
 
-      // Mapeo de datos SIN PII
+      // ----- CAMBIO 3: Mapeo de datos actualizado -----
+
+      // Transformamos el array de notas en un objeto simple
+      const customerNotes =
+        o.noteAttributes?.reduce((acc: Record<string, string>, attr: any) => {
+          if (attr.name && attr.value) {
+            acc[attr.name] = attr.value;
+          }
+          return acc;
+        }, {}) || null;
+
       const formattedOrder = {
         id: o.id,
         name: o.name,
@@ -373,6 +390,7 @@ server.registerTool(
             title: item.node.title,
             quantity: item.node.quantity,
           })) || [],
+        customerNotes: customerNotes, // Añadimos el nuevo objeto
       };
 
       return {
@@ -394,7 +412,7 @@ server.registerTool(
             text: `Error al obtener pedido por ID: ${errorMessage}`,
           },
         ],
-        structuredContent: { order: null }, // Cumple el schema
+        structuredContent: { order: null },
       };
     }
   }
