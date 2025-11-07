@@ -41,14 +41,12 @@ server.registerTool(
     description:
       "Get a list of the first 5 products from the Shopify store, including price, description, and images.",
     inputSchema: {}, // No necesita parámetros de entrada
-
-    // El "contrato" o Schema actualizado
     outputSchema: {
       products: z.array(
         z.object({
           id: z.number(),
           title: z.string(),
-          price: z.string(), // El precio de Shopify viene como string
+          price: z.string(),
           description: z.string().nullable(),
           imageUrl: z.string().nullable(),
           productUrl: z.string(),
@@ -58,12 +56,11 @@ server.registerTool(
   },
 
   async () => {
-    // Lee las credenciales de forma segura desde las variables de entorno
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
 
-    // Validación para asegurarnos de que las variables existan
     if (!storeUrl || !apiToken) {
+      // (Manejo de error sin cambios)
       console.error("Error: Las variables de Shopify no están configuradas.");
       return {
         content: [
@@ -78,48 +75,37 @@ server.registerTool(
       };
     }
 
-    // La URL de la API de Shopify (CORREGIDO: quité el / extra)
+    // CORRECCIÓN: Se quitó una barra '/' extra de la URL
     const apiUrl = `https://${storeUrl}/admin/api/2024-04/products.json?limit=5`;
-    const storeBaseUrl = `https://${storeUrl}`; // Para construir la URL del producto
+    const storeBaseUrl = `https://${storeUrl}`;
 
     try {
+      // (Lógica de fetch sin cambios)
       const response = await fetch(apiUrl, {
         headers: {
           "X-Shopify-Access-Token": apiToken,
           "Content-Type": "application/json",
         },
       });
-
       if (!response.ok) {
         throw new Error(`Error de Shopify: ${response.statusText}`);
       }
-
       const data = await response.json();
 
-      // La lógica de transformación actualizada
+      // (Lógica de map sin cambios)
       const products = data.products.map((p: any) => {
-        // Limpiamos la descripción HTML para que sea texto plano
         const cleanDescription = p.body_html
-          ? p.body_html.replace(/<[^>]*>?/gm, "") // Quita etiquetas HTML
+          ? p.body_html.replace(/<[^>]*>?/gm, "")
           : null;
-
         return {
           id: p.id,
           title: p.title,
-
-          // Obtenemos el precio de la primera variante
           price: p.variants.length > 0 ? p.variants[0].price : "0.00",
-
-          // Quitamos saltos de línea y limitamos la descripción a 150 caracteres
           description: cleanDescription
             ? cleanDescription.replace(/\s+/g, " ").trim().substring(0, 150) +
               "..."
             : "Sin descripción",
-
-          // Obtenemos la URL de la imagen principal
           imageUrl: p.image ? p.image.src : null,
-
-          // Construimos la URL pública del producto
           productUrl: `${storeBaseUrl}/products/${p.handle}`,
         };
       });
@@ -129,14 +115,12 @@ server.registerTool(
         structuredContent: { products },
       };
     } catch (error) {
-      // Bloque catch corregido para TypeScript
+      // (Manejo de error sin cambios)
       console.error("Error al llamar a la API de Shopify:", error);
-
       let errorMessage = "Ocurrió un error desconocido";
       if (error instanceof Error) {
         errorMessage = error.message;
       }
-
       return {
         content: [
           { type: "text", text: `Error al obtener productos: ${errorMessage}` },
@@ -153,37 +137,56 @@ server.registerTool(
 // ----------------------------------------------------
 
 // ----------------------------------------------------
-// NUEVA HERRAMIENTA: BUSCAR PEDIDOS
+// NUEVA HERRAMIENTA: BUSCAR PEDIDOS (con GraphQL)
+// (Reemplaza la antigua 'findShopifyOrders')
 // ----------------------------------------------------
 server.registerTool(
-  "findShopifyOrders",
+  "searchOrders", // Nuevo nombre, basado en tu código
   {
-    title: "Find Shopify Orders",
+    title: "Buscar pedidos en Shopify",
     description:
-      "Busca pedidos por número de pedido (ej. '#1001'), ID numérico, nombre del cliente o teléfono.",
+      "Busca pedidos por nombre, email, teléfono o texto. Si no se da un 'query', devuelve los pedidos más recientes.",
     inputSchema: {
       query: z
         .string()
+        .optional()
         .describe(
-          "El número de pedido (#1001), ID (518...888), nombre ('Juan Perez') o teléfono ('+123...89')"
+          "Texto de búsqueda (nombre, email, etc.) o vacío para los más recientes."
         ),
+      first: z.number().default(5).describe("Número de pedidos a devolver."),
     },
+    // Definimos un schema de salida robusto
     outputSchema: {
       orders: z.array(
         z.object({
-          id: z.number(),
-          name: z.string(), // Este es el número de pedido como #1001
-          customerName: z.string().nullable(),
-          phone: z.string().nullable(),
-          totalPrice: z.string(),
-          financialStatus: z.string(),
-          orderStatusUrl: z.string().nullable(), // URL para ver el estado
+          id: z.string(), // ID de GraphQL (ej. "gid://shopify/Order/123...")
+          name: z.string(), // Número de pedido (ej. "#1001")
+          createdAt: z.string(),
+          financialStatus: z.string().nullable(),
+          fulfillmentStatus: z.string().nullable(),
+          total: z.string().nullable(),
+          currency: z.string().nullable(),
+          customer: z
+            .object({
+              firstName: z.string().nullable(),
+              lastName: z.string().nullable(),
+              email: z.string().nullable(),
+              phone: z.string().nullable(),
+            })
+            .nullable(),
+          shippingAddress: z
+            .object({
+              address1: z.string().nullable(),
+              city: z.string().nullable(),
+              province: z.string().nullable(),
+              country: z.string().nullable(),
+            })
+            .nullable(),
         })
       ),
     },
   },
-  async ({ query }) => {
-    // Leer credenciales (sin cambios)
+  async ({ query = "", first = 5 }) => {
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
 
@@ -202,76 +205,82 @@ server.registerTool(
       };
     }
 
-    const baseUrl = `https://${storeUrl}/admin/api/2024-04`;
-    const headers = {
-      "X-Shopify-Access-Token": apiToken,
-      "Content-Type": "application/json",
-    };
+    // La URL para GraphQL es diferente
+    const apiUrl = `https://${storeUrl}/admin/api/2024-04/graphql.json`;
 
-    let orders: any[] = [];
+    // La consulta GraphQL de tu ejemplo
+    const gqlQuery = `
+      query getOrders($first: Int!, $query: String) {
+        orders(first: $first, query: $query, sortKey: CREATED_AT, reverse: true) {
+          edges {
+            node {
+              id
+              name
+              createdAt
+              financialStatus
+              fulfillmentStatus
+              totalPriceSet { shopMoney { amount currencyCode } }
+              customer { firstName lastName email phone }
+              shippingAddress { address1 city province country }
+            }
+          }
+        }
+      }
+    `;
 
     try {
-      if (query.startsWith("#")) {
-        // Opción 1: Buscar por número de pedido (ej. #1001)
-        const response = await fetch(
-          `${baseUrl}/orders.json?name=${query}&status=any`,
-          { headers }
+      const response = await fetch(apiUrl, {
+        method: "POST", // GraphQL usa POST
+        headers: {
+          "X-Shopify-Access-Token": apiToken,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query: gqlQuery,
+          variables: { first, query: query || null }, // Pasamos las variables
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Error de Shopify GraphQL: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+
+      if (data.errors) {
+        throw new Error(
+          `Error en la consulta GraphQL: ${JSON.stringify(data.errors)}`
         );
-        const data = await response.json();
-        orders = data.orders || [];
-      } else if (/^\d+$/.test(query)) {
-        // Opción 2: Buscar por ID numérico (ej. 5189388484888)
-        const response = await fetch(`${baseUrl}/orders/${query}.json`, {
-          headers,
-        });
-        if (response.ok) {
-          const data = await response.json();
-          orders = [data.order]; // Devuelve un solo pedido en un array
-        }
-      } else {
-        // Opción 3: Buscar por nombre o teléfono del cliente
-        // 1. Encontrar al cliente
-        const customerSearchUrl = `${baseUrl}/customers/search.json?query=${encodeURIComponent(
-          query
-        )}`;
-        const custResponse = await fetch(customerSearchUrl, { headers });
-        const custData = await custResponse.json();
-
-        if (custData.customers && custData.customers.length > 0) {
-          const customerId = custData.customers[0].id;
-
-          // 2. Encontrar pedidos de ese cliente
-          const orderSearchUrl = `${baseUrl}/orders.json?customer_id=${customerId}&status=any`;
-          const orderResponse = await fetch(orderSearchUrl, { headers });
-          const orderData = await orderResponse.json();
-          orders = orderData.orders || [];
-        }
       }
 
-      // Si no se encontraron pedidos
-      if (orders.length === 0 || orders[0] === null) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: "No se encontraron pedidos para esa búsqueda.",
-            },
-          ],
-          structuredContent: { orders: [] },
-        };
-      }
+      // Procesamos la respuesta de GraphQL (es un poco más compleja)
+      const rawOrders = data.data?.orders?.edges?.map((e: any) => e.node) ?? [];
 
-      // Formatear la respuesta
-      const formattedOrders = orders.map((o: any) => ({
+      // Mapeamos al formato de salida que definimos
+      const formattedOrders = rawOrders.map((o: any) => ({
         id: o.id,
         name: o.name,
-        customerName: o.customer
-          ? `${o.customer.first_name} ${o.customer.last_name}`
-          : "N/A",
-        phone: o.customer ? o.customer.phone : o.phone || null,
-        totalPrice: o.total_price,
-        financialStatus: o.financial_status,
-        orderStatusUrl: o.order_status_url,
+        createdAt: o.createdAt,
+        financialStatus: o.financialStatus || null,
+        fulfillmentStatus: o.fulfillmentStatus || null,
+        total: o.totalPriceSet?.shopMoney?.amount || null,
+        currency: o.totalPriceSet?.shopMoney?.currencyCode || null,
+        customer: o.customer
+          ? {
+              firstName: o.customer.firstName || null,
+              lastName: o.customer.lastName || null,
+              email: o.customer.email || null,
+              phone: o.customer.phone || null,
+            }
+          : null,
+        shippingAddress: o.shippingAddress
+          ? {
+              address1: o.shippingAddress.address1 || null,
+              city: o.shippingAddress.city || null,
+              province: o.shippingAddress.province || null,
+              country: o.shippingAddress.country || null,
+            }
+          : null,
       }));
 
       return {
@@ -281,7 +290,7 @@ server.registerTool(
         structuredContent: { orders: formattedOrders },
       };
     } catch (error) {
-      console.error("Error al llamar a la API de Shopify:", error);
+      console.error("Error al llamar a la API de Shopify (GraphQL):", error);
       let errorMessage = "Ocurrió un error desconocido";
       if (error instanceof Error) {
         errorMessage = error.message;
@@ -298,7 +307,7 @@ server.registerTool(
   }
 );
 // ----------------------------------------------------
-// FIN DE LA NUEVA HERRAMIENTA
+// FIN DE LA HERRAMIENTA BUSCAR PEDIDOS
 // ----------------------------------------------------
 
 // 3. Configurar Express para "servir" el servidor MCP
