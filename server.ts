@@ -137,11 +137,10 @@ server.registerTool(
 // ----------------------------------------------------
 
 // ----------------------------------------------------
-// NUEVA HERRAMIENTA: BUSCAR PEDIDOS (con GraphQL)
-// (Reemplaza la antigua 'findShopifyOrders')
+// HERRAMIENTA CORREGIDA: BUSCAR PEDIDOS (con GraphQL)
 // ----------------------------------------------------
 server.registerTool(
-  "searchOrders", // Nuevo nombre, basado en tu código
+  "searchOrders",
   {
     title: "Buscar pedidos en Shopify",
     description:
@@ -155,12 +154,11 @@ server.registerTool(
         ),
       first: z.number().default(5).describe("Número de pedidos a devolver."),
     },
-    // Definimos un schema de salida robusto
     outputSchema: {
       orders: z.array(
         z.object({
-          id: z.string(), // ID de GraphQL (ej. "gid://shopify/Order/123...")
-          name: z.string(), // Número de pedido (ej. "#1001")
+          id: z.string(),
+          name: z.string(),
           createdAt: z.string(),
           financialStatus: z.string().nullable(),
           fulfillmentStatus: z.string().nullable(),
@@ -192,6 +190,8 @@ server.registerTool(
 
     if (!storeUrl || !apiToken) {
       console.error("Error: Las variables de Shopify no están configuradas.");
+      // ----- INICIO DE LA CORRECCIÓN 1 -----
+      // Devolvemos un error en el 'content' pero 'orders: []' para cumplir el schema
       return {
         content: [
           {
@@ -199,16 +199,12 @@ server.registerTool(
             text: "Error: El servidor no está configurado para Shopify.",
           },
         ],
-        structuredContent: {
-          error: "El servidor no está configurado para Shopify.",
-        },
+        structuredContent: { orders: [] },
       };
+      // ----- FIN DE LA CORRECCIÓN 1 -----
     }
 
-    // La URL para GraphQL es diferente
     const apiUrl = `https://${storeUrl}/admin/api/2024-04/graphql.json`;
-
-    // La consulta GraphQL de tu ejemplo
     const gqlQuery = `
       query getOrders($first: Int!, $query: String) {
         orders(first: $first, query: $query, sortKey: CREATED_AT, reverse: true) {
@@ -230,14 +226,14 @@ server.registerTool(
 
     try {
       const response = await fetch(apiUrl, {
-        method: "POST", // GraphQL usa POST
+        method: "POST",
         headers: {
           "X-Shopify-Access-Token": apiToken,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
           query: gqlQuery,
-          variables: { first, query: query || null }, // Pasamos las variables
+          variables: { first, query: query || null },
         }),
       });
 
@@ -253,10 +249,8 @@ server.registerTool(
         );
       }
 
-      // Procesamos la respuesta de GraphQL (es un poco más compleja)
       const rawOrders = data.data?.orders?.edges?.map((e: any) => e.node) ?? [];
 
-      // Mapeamos al formato de salida que definimos
       const formattedOrders = rawOrders.map((o: any) => ({
         id: o.id,
         name: o.name,
@@ -295,14 +289,15 @@ server.registerTool(
       if (error instanceof Error) {
         errorMessage = error.message;
       }
+      // ----- INICIO DE LA CORRECIÓN 2 -----
+      // Devolvemos el error en 'content' pero 'orders: []' para cumplir el schema
       return {
         content: [
           { type: "text", text: `Error al obtener pedidos: ${errorMessage}` },
         ],
-        structuredContent: {
-          error: `Error al obtener pedidos: ${errorMessage}`,
-        },
+        structuredContent: { orders: [] },
       };
+      // ----- FIN DE LA CORRECIÓN 2 -----
     }
   }
 );
