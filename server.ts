@@ -119,29 +119,29 @@ server.registerTool(
 );
 
 // ----------------------------------------------------
-// HERRAMIENTA 3: BUSCAR PEDIDOS (Por Fecha o #Número)
-// (Sin cambios, sigue usando GraphQL)
+// HERRAMIENTA 3: BUSCAR PEDIDOS (GraphQL)
+// (¡Descripción actualizada!)
 // ----------------------------------------------------
 server.registerTool(
   "searchOrders",
   {
-    title: "Buscar pedidos en Shopify (por # o fecha)",
+    title: "Buscar Pedidos (por #Número o Fecha)",
     description:
-      "Busca pedidos por número (ej. '#1001') o fecha (ej. 'created_at:>2025-11-01'). Si query está vacío, trae los más recientes.",
+      "Busca **listas** de pedidos. Úsalo para buscar por **NÚMERO DE PEDIDO (ej. '#1001', '#2507')** o por fecha (ej. 'created_at:>...'). Si la query está vacía, trae los más recientes.",
     inputSchema: {
       query: z
         .string()
         .optional()
         .describe(
-          "Texto de búsqueda (ej. 'name:#1001' o 'created_at:>2025-11-01') o vacío."
+          "La consulta. Para números de pedido, usa 'name:#' seguido del número (ej. 'name:#2507')"
         ),
       first: z.number().default(5).describe("Número de pedidos a devolver."),
     },
     outputSchema: {
       orders: z.array(
         z.object({
-          id: z.string(), // GID
-          name: z.string(),
+          id: z.string(), // GID (ej. gid://shopify/Order/6216169488420)
+          name: z.string(), // ej. #2507
           createdAt: z.string(),
           financialStatus: z.string().nullable(),
           fulfillmentStatus: z.string().nullable(),
@@ -152,7 +152,7 @@ server.registerTool(
     },
   },
   async ({ query = "", first = 5 }) => {
-    // ... (El código de esta herramienta no cambia) ...
+    // --- (La lógica de esta herramienta no cambia) ---
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
     if (!storeUrl || !apiToken) {
@@ -238,15 +238,15 @@ server.registerTool(
 );
 
 // ----------------------------------------------------
-// HERRAMIENTA 4: OBTENER PEDIDO POR ID (¡MODIFICADA A REST API!)
-// (Usamos REST para poder leer 'note_attributes' que GraphQL bloquea)
+// HERRAMIENTA 4: OBTENER PEDIDO POR ID (REST API)
+// (¡Descripción actualizada!)
 // ----------------------------------------------------
 server.registerTool(
   "getOrderById",
   {
-    title: "Consultar pedido por ID de Shopify (REST)",
+    title: "Consultar Pedido por ID (con Notas de Cliente)",
     description:
-      "Obtiene los detalles de un pedido específico usando su ID (gid://... o numérico) y devuelve las notas del cliente (nombre, dirección).",
+      "Obtiene los detalles y **notas de cliente** de **UN SOLO** pedido. Úsalo *solo* si ya tienes el **ID DE BASE DE DATOS** (un número muy largo como '6216...420' o un ID 'gid://...'). **NO USAR para números de pedido cortos como '#1001'.**",
     inputSchema: {
       id: z
         .string()
@@ -257,8 +257,8 @@ server.registerTool(
     outputSchema: {
       order: z
         .object({
-          id: z.number(), // REST API usa ID numérico
-          name: z.string(), // ej. #2549
+          id: z.number(),
+          name: z.string(),
           createdAt: z.string(),
           financialStatus: z.string().nullable(),
           fulfillmentStatus: z.string().nullable(),
@@ -278,6 +278,7 @@ server.registerTool(
     },
   },
   async ({ id }) => {
+    // --- (La lógica de esta herramienta no cambia) ---
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
     if (!storeUrl || !apiToken) {
@@ -293,25 +294,24 @@ server.registerTool(
       };
     }
 
-    // --- LÓGICA DE REST API ---
-
-    // 1. Extraer el ID numérico
-    // El ID puede ser 'gid://shopify/Order/12345' o solo '12345'
     const numericId = id.split("/").pop();
     if (!numericId || !/^\d+$/.test(numericId)) {
       return {
-        content: [{ type: "text", text: `ID de pedido no válido: ${id}` }],
+        content: [
+          {
+            type: "text",
+            text: `ID de pedido no válido: ${id}. Debe ser el ID de base de datos, no el número de pedido.`,
+          },
+        ],
         structuredContent: { order: null },
       };
     }
 
-    // Usamos el endpoint de la API REST que probaste en Postman
     const apiUrl = `https://${storeUrl}/admin/api/2024-04/orders/${numericId}.json`;
 
     try {
-      // 2. Llamar a la API REST (no GraphQL)
       const response = await fetch(apiUrl, {
-        method: "GET", // REST usa GET
+        method: "GET",
         headers: {
           "X-Shopify-Access-Token": apiToken,
           "Content-Type": "application/json",
@@ -319,10 +319,11 @@ server.registerTool(
       });
 
       if (!response.ok) {
+        // Si no lo encuentra, lanza el error "Not Found" que viste
         throw new Error(`Error de Shopify REST: ${response.statusText}`);
       }
       const data = await response.json();
-      const o = data.order; // La respuesta REST viene en un objeto 'order'
+      const o = data.order;
 
       if (!o) {
         return {
@@ -336,7 +337,6 @@ server.registerTool(
         };
       }
 
-      // 3. Transformar los note_attributes (snake_case)
       const customerNotes =
         o.note_attributes?.reduce((acc: Record<string, string>, attr: any) => {
           if (attr.name && attr.value) {
@@ -345,13 +345,12 @@ server.registerTool(
           return acc;
         }, {}) || null;
 
-      // 4. Mapear la respuesta REST al schema de salida
       const formattedOrder = {
-        id: o.id, // ID numérico
+        id: o.id,
         name: o.name,
         createdAt: o.created_at,
         financialStatus: o.financial_status || null,
-        fulfillmentStatus: o.fulfillment_status || "UNFULFILLED", // REST puede devolver null
+        fulfillmentStatus: o.fulfillment_status || "UNFULFILLED",
         total: o.total_price || null,
         currency: o.currency || null,
         lineItems:
@@ -359,7 +358,7 @@ server.registerTool(
             title: item.title,
             quantity: item.quantity,
           })) || [],
-        customerNotes: customerNotes, // ¡Aquí están tus datos de cliente!
+        customerNotes: customerNotes,
       };
 
       return {
