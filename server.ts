@@ -7,13 +7,13 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import express from "express";
 import { z } from "zod";
 
-// 1. Crear el servidor MCP (Sin cambios)
+// 1. Crear el servidor MCP
 const server = new McpServer({
   name: "demo-server-railway",
   version: "1.0.0",
 });
 
-// 2. Registrar una herramienta (La original, sin cambios)
+// 2. Registrar una herramienta (Suma)
 server.registerTool(
   "add",
   {
@@ -32,19 +32,26 @@ server.registerTool(
 );
 
 // ----------------------------------------------------
-// INICIO DE LA NUEVA HERRAMIENTA SHOPIFY
+// HERRAMIENTA SHOPIFY MEJORADA
 // ----------------------------------------------------
 server.registerTool(
   "listShopifyProducts",
   {
     title: "List Shopify Products",
-    description: "Get a list of the first 5 products from the Shopify store",
+    description:
+      "Get a list of the first 5 products from the Shopify store, including price, description, and images.",
     inputSchema: {}, // No necesita parámetros de entrada
+
+    // El "contrato" o Schema actualizado
     outputSchema: {
       products: z.array(
         z.object({
           id: z.number(),
           title: z.string(),
+          price: z.string(), // El precio de Shopify viene como string
+          description: z.string().nullable(),
+          imageUrl: z.string().nullable(),
+          productUrl: z.string(),
         })
       ),
     },
@@ -70,9 +77,9 @@ server.registerTool(
       };
     }
 
-    // La URL de la API de Shopify. Asegúrate de que tu storeUrl no tenga 'https://'
-    // Ejemplo: mi-tienda.myshopify.com
-    const apiUrl = `https://${storeUrl}/admin/api/2024-04/products.json?limit=5`;
+    // La URL de la API de Shopify
+    const apiUrl = `https:///${storeUrl}/admin/api/2024-04/products.json?limit=5`;
+    const storeBaseUrl = `https://${storeUrl}`; // Para construir la URL del producto
 
     try {
       const response = await fetch(apiUrl, {
@@ -88,24 +95,47 @@ server.registerTool(
 
       const data = await response.json();
 
-      // Simplificamos la respuesta para el LLM
-      const products = data.products.map((p: any) => ({
-        id: p.id,
-        title: p.title,
-      }));
+      // La lógica de transformación actualizada
+      const products = data.products.map((p: any) => {
+        // Limpiamos la descripción HTML para que sea texto plano
+        const cleanDescription = p.body_html
+          ? p.body_html.replace(/<[^>]*>?/gm, "") // Quita etiquetas HTML
+          : null;
+
+        return {
+          id: p.id,
+          title: p.title,
+
+          // Obtenemos el precio de la primera variante
+          price: p.variants.length > 0 ? p.variants[0].price : "0.00",
+
+          // Quitamos saltos de línea y limitamos la descripción a 150 caracteres
+          description: cleanDescription
+            ? cleanDescription.replace(/\s+/g, " ").trim().substring(0, 150) +
+              "..."
+            : "Sin descripción",
+
+          // Obtenemos la URL de la imagen principal
+          imageUrl: p.image ? p.image.src : null,
+
+          // Construimos la URL pública del producto
+          productUrl: `${storeBaseUrl}/products/${p.handle}`,
+        };
+      });
 
       return {
         content: [{ type: "text", text: JSON.stringify(products, null, 2) }],
         structuredContent: { products },
       };
     } catch (error) {
+      // Bloque catch corregido para TypeScript
       console.error("Error al llamar a la API de Shopify:", error);
 
-      // Creamos un mensaje de error seguro
       let errorMessage = "Ocurrió un error desconocido";
       if (error instanceof Error) {
         errorMessage = error.message;
       }
+
       return {
         content: [
           { type: "text", text: `Error al obtener productos: ${errorMessage}` },
@@ -118,13 +148,14 @@ server.registerTool(
   }
 );
 // ----------------------------------------------------
-// FIN DE LA NUEVA HERRAMIENTA SHOPIFY
+// FIN DE LA HERRAMIENTA SHOPIFY
 // ----------------------------------------------------
 
-// 3. Configurar Express (Sin cambios)
+// 3. Configurar Express para "servir" el servidor MCP
 const app = express();
 app.use(express.json());
 
+// Esta es la ruta donde el cliente (5ire, OpenAI, etc.) se conectará
 app.post("/mcp", async (req, res) => {
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
@@ -137,7 +168,8 @@ app.post("/mcp", async (req, res) => {
   await transport.handleRequest(req, res, req.body);
 });
 
-// 4. Iniciar el servidor HTTP (Sin cambios)
+// 4. Iniciar el servidor HTTP
+// Railway te dará una variable `PORT` automáticamente.
 const port = parseInt(process.env.PORT || "3000");
 
 app
