@@ -139,6 +139,9 @@ server.registerTool(
 // ----------------------------------------------------
 // HERRAMIENTA CORREGIDA: BUSCAR PEDIDOS (con GraphQL)
 // ----------------------------------------------------
+// ----------------------------------------------------
+// HERRAMIENTA CORREGIDA OTRA VEZ: BUSCAR PEDIDOS (con GraphQL)
+// ----------------------------------------------------
 server.registerTool(
   "searchOrders",
   {
@@ -160,8 +163,10 @@ server.registerTool(
           id: z.string(),
           name: z.string(),
           createdAt: z.string(),
+          // ----- CAMBIO 1: Nombres de campo corregidos -----
           financialStatus: z.string().nullable(),
           fulfillmentStatus: z.string().nullable(),
+          // ----- FIN CAMBIO 1 -----
           total: z.string().nullable(),
           currency: z.string().nullable(),
           customer: z
@@ -190,8 +195,6 @@ server.registerTool(
 
     if (!storeUrl || !apiToken) {
       console.error("Error: Las variables de Shopify no están configuradas.");
-      // ----- INICIO DE LA CORRECCIÓN 1 -----
-      // Devolvemos un error en el 'content' pero 'orders: []' para cumplir el schema
       return {
         content: [
           {
@@ -201,10 +204,11 @@ server.registerTool(
         ],
         structuredContent: { orders: [] },
       };
-      // ----- FIN DE LA CORRECCIÓN 1 -----
     }
 
     const apiUrl = `https://${storeUrl}/admin/api/2024-04/graphql.json`;
+
+    // ----- CAMBIO 2: Consulta GraphQL corregida -----
     const gqlQuery = `
       query getOrders($first: Int!, $query: String) {
         orders(first: $first, query: $query, sortKey: CREATED_AT, reverse: true) {
@@ -213,8 +217,8 @@ server.registerTool(
               id
               name
               createdAt
-              financialStatus
-              fulfillmentStatus
+              displayFinancialStatus  # <--- CORREGIDO
+              displayFulfillmentStatus # <--- CORREGIDO
               totalPriceSet { shopMoney { amount currencyCode } }
               customer { firstName lastName email phone }
               shippingAddress { address1 city province country }
@@ -223,6 +227,7 @@ server.registerTool(
         }
       }
     `;
+    // ----- FIN CAMBIO 2 -----
 
     try {
       const response = await fetch(apiUrl, {
@@ -251,12 +256,13 @@ server.registerTool(
 
       const rawOrders = data.data?.orders?.edges?.map((e: any) => e.node) ?? [];
 
+      // ----- CAMBIO 3: Mapeo de datos corregido -----
       const formattedOrders = rawOrders.map((o: any) => ({
         id: o.id,
         name: o.name,
         createdAt: o.createdAt,
-        financialStatus: o.financialStatus || null,
-        fulfillmentStatus: o.fulfillmentStatus || null,
+        financialStatus: o.displayFinancialStatus || null, // <--- CORREGIDO
+        fulfillmentStatus: o.displayFulfillmentStatus || null, // <--- CORREGIDO
         total: o.totalPriceSet?.shopMoney?.amount || null,
         currency: o.totalPriceSet?.shopMoney?.currencyCode || null,
         customer: o.customer
@@ -276,6 +282,7 @@ server.registerTool(
             }
           : null,
       }));
+      // ----- FIN CAMBIO 3 -----
 
       return {
         content: [
@@ -289,15 +296,12 @@ server.registerTool(
       if (error instanceof Error) {
         errorMessage = error.message;
       }
-      // ----- INICIO DE LA CORRECIÓN 2 -----
-      // Devolvemos el error en 'content' pero 'orders: []' para cumplir el schema
       return {
         content: [
           { type: "text", text: `Error al obtener pedidos: ${errorMessage}` },
         ],
         structuredContent: { orders: [] },
       };
-      // ----- FIN DE LA CORRECIÓN 2 -----
     }
   }
 );
