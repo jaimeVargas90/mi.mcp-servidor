@@ -799,6 +799,278 @@ server.registerTool(
 // ----------------------------------------------------
 
 // ----------------------------------------------------
+// HERRAMIENTA 6: CREAR BORRADOR (Paso 1)
+// ----------------------------------------------------
+server.registerTool(
+  "createDraftOrder",
+  {
+    title: "Crear Borrador de Pedido (Paso 1)",
+    description:
+      "Crea un BORRADOR de pedido (no una orden real) con los productos y datos del cliente. Este es el primer paso antes de confirmar.",
+    inputSchema: {
+      variantId: z
+        .number()
+        .describe("El ID numérico de la VARIANTE del producto."),
+      quantity: z.number().default(1).describe("Cantidad de unidades."),
+      name: z.string().optional().describe("Nombre(s) y Apellido del cliente."),
+      phone: z
+        .string()
+        .optional()
+        .describe("Número de WhatsApp del cliente (ej. 300...)."),
+      address1: z.string().optional().describe("Dirección principal."),
+      address2: z
+        .string()
+        .optional()
+        .describe("Datos adicionales de la dirección."),
+      city: z.string().optional().describe("Ciudad del cliente."),
+      province: z
+        .string()
+        .optional()
+        .describe("Provincia/Departamento del cliente."),
+      country: z
+        .string()
+        .optional()
+        .default("Colombia")
+        .describe("País del cliente."),
+      zip: z.string().optional().describe("Código postal."),
+    },
+    outputSchema: {
+      message: z.string(),
+      draftOrderId: z.number().optional(), // ID numérico del borrador
+      totalPrice: z.string().optional(),
+      details: z.string().optional(),
+    },
+  },
+  async (input) => {
+    const storeUrl = process.env.SHOPIFY_STORE_URL;
+    const apiToken = process.env.SHOPIFY_API_TOKEN;
+    if (!storeUrl || !apiToken) {
+      const result = {
+        message: "Error: El servidor no está configurado para Shopify.",
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: result,
+      };
+    }
+
+    // Formatear Teléfono
+    let formattedPhone = input.phone;
+    if (formattedPhone) {
+      formattedPhone = formattedPhone.replace(/[\s\-\(\)]+/g, "");
+      if (formattedPhone.length === 10 && !formattedPhone.startsWith("+")) {
+        formattedPhone = `+57${formattedPhone}`;
+      }
+    }
+
+    // Validar datos mínimos
+    if (
+      !input.name ||
+      !formattedPhone ||
+      !input.address1 ||
+      !input.city ||
+      !input.province
+    ) {
+      const result = {
+        message: "❌ Error: Faltan datos del cliente.",
+        details:
+          "Para crear el borrador, necesito que me pidas el nombre, teléfono, dirección, ciudad y departamento del cliente.",
+      };
+      return {
+        content: [
+          { type: "text", text: `${result.message} ${result.details}` },
+        ],
+        structuredContent: result,
+      };
+    }
+
+    const firstName = input.name!.split(" ")[0];
+    const lastName = input.name!.split(" ").slice(1).join(" ") || firstName;
+
+    // Mapeo de los datos de entrada a los note_attributes
+    const note_attributes = [
+      { name: "Nombre(s) y Apellido", value: input.name! },
+      { name: "WhatsApp", value: formattedPhone! },
+      { name: "Ingresa tu dirección completa", value: input.address1! },
+      { name: "Datos adicionales", value: input.address2 || "" },
+      { name: "Ciudad", value: input.city! },
+      { name: "Departamento", value: input.province! },
+      { name: "País", value: input.country || "Colombia" },
+    ];
+
+    // Construir el payload del NUEVO BORRADOR
+    const payload = {
+      draft_order: {
+        // <-- La API de Borradores usa 'draft_order'
+        line_items: [
+          {
+            variant_id: input.variantId,
+            quantity: input.quantity,
+          },
+        ],
+        note_attributes: note_attributes,
+        shipping_address: {
+          first_name: firstName,
+          last_name: lastName,
+          phone: formattedPhone!,
+          address1: input.address1!,
+          address2: input.address2 || "",
+          city: input.city!,
+          province: input.province!,
+          country: input.country || "Colombia",
+          zip: input.zip || "",
+        },
+        customer: {
+          first_name: firstName,
+          last_name: lastName,
+          phone: formattedPhone!,
+        },
+      },
+    };
+
+    try {
+      const apiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders.json`;
+      const response = await fetch(apiUrl, {
+        method: "POST",
+        headers: {
+          "X-Shopify-Access-Token": apiToken,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(
+          `Error al crear el borrador: ${
+            response.statusText
+          }. Detalles: ${JSON.stringify(errorData)}`
+        );
+      }
+
+      const data = await response.json();
+      const newDraftOrder = data.draft_order;
+
+      const result = {
+        message: `✅ Borrador de pedido creado. El total es ${newDraftOrder.total_price}. ¿Confirmo el pedido?`,
+        draftOrderId: newDraftOrder.id,
+        totalPrice: newDraftOrder.total_price,
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      console.error(
+        "❌ Error al crear borrador:",
+        error instanceof Error ? error.message : error
+      );
+      const result = {
+        message: "❌ Error al crear el borrador en Shopify.",
+        details: error instanceof Error ? error.message : "Error desconocido",
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: result,
+      };
+    }
+  }
+);
+
+// ----------------------------------------------------
+// HERRAMIENTA 7: COMPLETAR BORRADOR (Paso 2)
+// ----------------------------------------------------
+server.registerTool(
+  "completeDraftOrder",
+  {
+    title: "Completar Borrador de Pedido (Paso 2)",
+    description:
+      'Toma un ID de borrador de pedido, lo "confirma" y lo convierte en un pedido real con pago pendiente.',
+    inputSchema: {
+      draftOrderId: z
+        .number()
+        .describe(
+          "El ID numérico del borrador de pedido a completar (ej. 12345)."
+        ),
+    },
+    outputSchema: {
+      message: z.string(),
+      orderId: z.number().optional(), // ID numérico del pedido REAL
+      orderName: z.string().optional(), // ej. #1004
+      details: z.string().optional(), // Para errores
+    },
+  },
+  async ({ draftOrderId }) => {
+    const storeUrl = process.env.SHOPIFY_STORE_URL;
+    const apiToken = process.env.SHOPIFY_API_TOKEN;
+    if (!storeUrl || !apiToken) {
+      const result = {
+        message: "Error: El servidor no está configurado para Shopify.",
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: result,
+      };
+    }
+
+    try {
+      // Este es el endpoint para "completar" el borrador
+      const apiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders/${draftOrderId}/complete.json`;
+
+      const response = await fetch(apiUrl, {
+        method: "PUT", // Se usa PUT para completar
+        headers: {
+          "X-Shopify-Access-Token": apiToken,
+          "Content-Type": "application/json",
+        },
+        // Al completarlo, por defecto queda con 'payment_status: pending'
+        // Si quisiéramos marcarlo como pagado, enviaríamos:
+        // body: JSON.stringify({ payment_pending: false })
+        // Pero como lo queremos pendiente, no enviamos body.
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(
+          `Error al completar el borrador: ${
+            response.statusText
+          }. Detalles: ${JSON.stringify(errorData)}`
+        );
+      }
+
+      const data = await response.json();
+      const completedOrder = data.draft_order.order; // La respuesta nos da el pedido real
+
+      const result = {
+        message: "✅ Pedido confirmado y creado exitosamente.",
+        orderId: completedOrder.id,
+        orderName: completedOrder.name, // ej. #1004
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      console.error(
+        "❌ Error al completar borrador:",
+        error instanceof Error ? error.message : error
+      );
+      const result = {
+        message: "❌ Error al confirmar el borrador en Shopify.",
+        details: error instanceof Error ? error.message : "Error desconocido",
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: result,
+      };
+    }
+  }
+);
+// ----------------------------------------------------
+// FIN DE LA HERRAMIENTA 7
+// ----------------------------------------------------
+
+// ----------------------------------------------------
 //  Configurar Express para "servir" el servidor MCP
 // ----------------------------------------------------
 
