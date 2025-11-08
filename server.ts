@@ -602,7 +602,7 @@ server.registerTool(
 // ----------------------------------------------------
 
 // ----------------------------------------------------
-// NUEVA HERRAMIENTA 5: CREAR PEDIDO (REST API)
+// HERRAMIENTA 5: CREAR PEDIDO (REST API)
 // ----------------------------------------------------
 server.registerTool(
   "createOrder",
@@ -618,17 +618,24 @@ server.registerTool(
         .number()
         .default(1)
         .describe("Cantidad de unidades del producto."),
-      name: z.string().describe("Nombre(s) y Apellido del cliente."),
-      phone: z.string().describe("Número de WhatsApp del cliente."),
+      name: z.string().optional().describe("Nombre(s) y Apellido del cliente."),
+      phone: z
+        .string()
+        .optional()
+        .describe("Número de WhatsApp del cliente (ej. 300... o +57...)."),
       address1: z
         .string()
+        .optional()
         .describe("Dirección principal (ej. 'Calle 20 #30-60')."),
       address2: z
         .string()
         .optional()
         .describe("Datos adicionales de la dirección (ej. 'Apartamento 201')."),
-      city: z.string().describe("Ciudad del cliente."),
-      province: z.string().describe("Provincia/Departamento del cliente."),
+      city: z.string().optional().describe("Ciudad del cliente."),
+      province: z
+        .string()
+        .optional()
+        .describe("Provincia/Departamento del cliente."),
       country: z
         .string()
         .optional()
@@ -638,9 +645,9 @@ server.registerTool(
     },
     outputSchema: {
       message: z.string(),
-      orderId: z.number().optional(), // ID numérico del pedido creado
-      orderName: z.string().optional(), // ej. #1003
-      details: z.string().optional(), // Para errores
+      orderId: z.number().optional(),
+      orderName: z.string().optional(),
+      details: z.string().optional(),
     },
   },
   async (input) => {
@@ -657,21 +664,56 @@ server.registerTool(
       };
     }
 
-    // Mapeo de los datos de entrada a los note_attributes
+    let formattedPhone = input.phone;
+    if (formattedPhone) {
+      formattedPhone = formattedPhone.replace(/[\s\-\(\)]+/g, "");
+      if (formattedPhone.length === 10 && !formattedPhone.startsWith("+")) {
+        formattedPhone = `+57${formattedPhone}`;
+      } else if (!formattedPhone.startsWith("+")) {
+        formattedPhone = `+${formattedPhone}`;
+      }
+    }
+
+    // Validación de datos
+    if (
+      !input.name ||
+      !formattedPhone ||
+      !input.address1 ||
+      !input.city ||
+      !input.province
+    ) {
+      const result = {
+        message: "❌ Error: Faltan datos del cliente.",
+        details:
+          "Para crear el pedido, necesito que me pidas el nombre, teléfono, dirección, ciudad y departamento del cliente.",
+      };
+      return {
+        content: [
+          { type: "text", text: `${result.message} ${result.details}` },
+        ],
+        structuredContent: result,
+      };
+    }
+
+    // Mapeo de note_attributes
     const note_attributes = [
-      { name: "Nombre(s) y Apellido", value: input.name },
-      { name: "WhatsApp", value: input.phone },
-      { name: "Ingresa tu dirección completa", value: input.address1 },
+      { name: "Nombre(s) y Apellido", value: input.name! },
+      { name: "WhatsApp", value: formattedPhone! },
+      { name: "Ingresa tu dirección completa", value: input.address1! },
       { name: "Datos adicionales", value: input.address2 || "" },
-      { name: "Ciudad", value: input.city },
-      { name: "Departamento", value: input.province },
+      { name: "Ciudad", value: input.city! },
+      { name: "Departamento", value: input.province! },
       { name: "País", value: input.country || "Colombia" },
     ];
+
+    // ----- CAMBIO AQUÍ: Separamos el nombre y apellido -----
+    const firstName = input.name!.split(" ")[0];
+    const lastName = input.name!.split(" ").slice(1).join(" ") || firstName; // Si solo hay un nombre, se repite
 
     // Construir el payload del nuevo pedido
     const payload = {
       order: {
-        financial_status: "pending", // <-- Pago Pendiente
+        financial_status: "pending",
         line_items: [
           {
             variant_id: input.variantId,
@@ -680,18 +722,26 @@ server.registerTool(
         ],
         note_attributes: note_attributes,
         shipping_address: {
-          first_name: input.name.split(" ")[0],
-          last_name: input.name.split(" ").slice(1).join(" ") || input.name, // Fallback si no hay apellido
-          phone: input.phone,
-          address1: input.address1,
+          first_name: firstName,
+          last_name: lastName,
+          phone: formattedPhone!,
+          address1: input.address1!,
           address2: input.address2 || "",
-          city: input.city,
-          province: input.province,
+          city: input.city!,
+          province: input.province!,
           country: input.country || "Colombia",
           zip: input.zip || "",
         },
-        // Shopify requiere un email o teléfono para el cliente
-        phone: input.phone,
+        phone: formattedPhone!,
+
+        // ----- Añadimos el objeto 'customer' -----
+        customer: {
+          first_name: firstName,
+          last_name: lastName,
+          phone: formattedPhone!,
+          // Shopify a veces exige un email, si no lo tenemos, podemos omitirlo
+          // o crear uno falso, pero el teléfono suele ser suficiente.
+        },
       },
     };
 
@@ -721,7 +771,7 @@ server.registerTool(
       const result = {
         message: "✅ Pedido creado exitosamente en Shopify.",
         orderId: newOrder.id,
-        orderName: newOrder.name, // ej. #1003
+        orderName: newOrder.name,
       };
       return {
         content: [{ type: "text", text: result.message }],
