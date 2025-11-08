@@ -44,6 +44,7 @@ server.registerTool(
       products: z.array(
         z.object({
           id: z.number(),
+          variantId: z.number().nullable(),
           title: z.string(),
           price: z.string(),
           description: z.string().nullable(),
@@ -87,6 +88,7 @@ server.registerTool(
           : null;
         return {
           id: p.id,
+          variantId: p.variants.length > 0 ? p.variants[0].id : null,
           title: p.title,
           price: p.variants.length > 0 ? p.variants[0].price : "0.00",
           description: cleanDescription
@@ -597,6 +599,153 @@ server.registerTool(
 );
 // ----------------------------------------------------
 // FIN DE LA HERRAMIENTA 4
+// ----------------------------------------------------
+
+// ----------------------------------------------------
+// NUEVA HERRAMIENTA 5: CREAR PEDIDO (REST API)
+// ----------------------------------------------------
+server.registerTool(
+  "createOrder",
+  {
+    title: "Crear Pedido Shopify (REST)",
+    description:
+      'Crea un nuevo pedido en Shopify con estado de pago "pendiente" (ideal para contra entrega). Requiere el ID de variante del producto y los datos del cliente.',
+    inputSchema: {
+      variantId: z
+        .number()
+        .describe("El ID numérico de la VARIANTE del producto (ej. 44...21)."),
+      quantity: z
+        .number()
+        .default(1)
+        .describe("Cantidad de unidades del producto."),
+      name: z.string().describe("Nombre(s) y Apellido del cliente."),
+      phone: z.string().describe("Número de WhatsApp del cliente."),
+      address1: z
+        .string()
+        .describe("Dirección principal (ej. 'Calle 20 #30-60')."),
+      address2: z
+        .string()
+        .optional()
+        .describe("Datos adicionales de la dirección (ej. 'Apartamento 201')."),
+      city: z.string().describe("Ciudad del cliente."),
+      province: z.string().describe("Provincia/Departamento del cliente."),
+      country: z
+        .string()
+        .optional()
+        .default("Colombia")
+        .describe("País del cliente."),
+      zip: z.string().optional().describe("Código postal."),
+    },
+    outputSchema: {
+      message: z.string(),
+      orderId: z.number().optional(), // ID numérico del pedido creado
+      orderName: z.string().optional(), // ej. #1003
+      details: z.string().optional(), // Para errores
+    },
+  },
+  async (input) => {
+    const storeUrl = process.env.SHOPIFY_STORE_URL;
+    const apiToken = process.env.SHOPIFY_API_TOKEN;
+    if (!storeUrl || !apiToken) {
+      console.error("Error: Las variables de Shopify no están configuradas.");
+      const result = {
+        message: "Error: El servidor no está configurado para Shopify.",
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: result,
+      };
+    }
+
+    // Mapeo de los datos de entrada a los note_attributes
+    const note_attributes = [
+      { name: "Nombre(s) y Apellido", value: input.name },
+      { name: "WhatsApp", value: input.phone },
+      { name: "Ingresa tu dirección completa", value: input.address1 },
+      { name: "Datos adicionales", value: input.address2 || "" },
+      { name: "Ciudad", value: input.city },
+      { name: "Departamento", value: input.province },
+      { name: "País", value: input.country || "Colombia" },
+    ];
+
+    // Construir el payload del nuevo pedido
+    const payload = {
+      order: {
+        financial_status: "pending", // <-- Pago Pendiente
+        line_items: [
+          {
+            variant_id: input.variantId,
+            quantity: input.quantity,
+          },
+        ],
+        note_attributes: note_attributes,
+        shipping_address: {
+          first_name: input.name.split(" ")[0],
+          last_name: input.name.split(" ").slice(1).join(" ") || input.name, // Fallback si no hay apellido
+          phone: input.phone,
+          address1: input.address1,
+          address2: input.address2 || "",
+          city: input.city,
+          province: input.province,
+          country: input.country || "Colombia",
+          zip: input.zip || "",
+        },
+        // Shopify requiere un email o teléfono para el cliente
+        phone: input.phone,
+      },
+    };
+
+    try {
+      const apiUrl = `https://${storeUrl}/admin/api/2024-04/orders.json`;
+      const response = await fetch(apiUrl, {
+        method: "POST",
+        headers: {
+          "X-Shopify-Access-Token": apiToken,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(
+          `Error al crear el pedido: ${
+            response.statusText
+          }. Detalles: ${JSON.stringify(errorData)}`
+        );
+      }
+
+      const data = await response.json();
+      const newOrder = data.order;
+
+      const result = {
+        message: "✅ Pedido creado exitosamente en Shopify.",
+        orderId: newOrder.id,
+        orderName: newOrder.name, // ej. #1003
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      console.error(
+        "❌ Error al crear pedido:",
+        error instanceof Error ? error.message : error
+      );
+
+      const result = {
+        message: "❌ Error al crear el pedido en Shopify.",
+        details: error instanceof Error ? error.message : "Error desconocido",
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: result,
+      };
+    }
+  }
+);
+// ----------------------------------------------------
+// FIN DE LA HERRAMIENTA 5
 // ----------------------------------------------------
 
 // ----------------------------------------------------
