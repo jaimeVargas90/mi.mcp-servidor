@@ -1,4 +1,3 @@
-// Importa todo lo necesario
 import {
   McpServer,
   ResourceTemplate,
@@ -13,7 +12,7 @@ const server = new McpServer({
   version: "1.0.0",
 });
 
-// 2. Registrar una herramienta (Suma)
+// 2. Registrar una herramienta
 server.registerTool(
   "add",
   {
@@ -32,7 +31,7 @@ server.registerTool(
 );
 
 // ----------------------------------------------------
-// HERRAMIENTA 2: LISTAR PRODUCTOS (Sin cambios)
+// HERRAMIENTA 1: LISTAR PRODUCTOS
 // ----------------------------------------------------
 server.registerTool(
   "listShopifyProducts",
@@ -119,8 +118,11 @@ server.registerTool(
 );
 
 // ----------------------------------------------------
-// HERRAMIENTA 3: BUSCAR PEDIDOS (GraphQL)
-// (¡Descripción actualizada!)
+// FIN DE LA HERRAMIENTA 1
+// ----------------------------------------------------
+
+// ----------------------------------------------------
+// HERRAMIENTA 2: BUSCAR PEDIDOS (GraphQL)
 // ----------------------------------------------------
 server.registerTool(
   "searchOrders",
@@ -152,7 +154,6 @@ server.registerTool(
     },
   },
   async ({ query = "", first = 5 }) => {
-    // --- (La lógica de esta herramienta no cambia) ---
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
     if (!storeUrl || !apiToken) {
@@ -238,8 +239,11 @@ server.registerTool(
 );
 
 // ----------------------------------------------------
-// HERRAMIENTA 4: OBTENER PEDIDO POR ID (REST API)
-// (¡Descripción actualizada!)
+// FIN DE LA HERRAMIENTA 2
+// ----------------------------------------------------
+
+// ----------------------------------------------------
+// HERRAMIENTA 3: OBTENER PEDIDO POR ID (REST API)
 // ----------------------------------------------------
 server.registerTool(
   "getOrderById",
@@ -278,7 +282,6 @@ server.registerTool(
     },
   },
   async ({ id }) => {
-    // --- (La lógica de esta herramienta no cambia) ---
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
     if (!storeUrl || !apiToken) {
@@ -319,7 +322,6 @@ server.registerTool(
       });
 
       if (!response.ok) {
-        // Si no lo encuentra, lanza el error "Not Found" que viste
         throw new Error(`Error de Shopify REST: ${response.statusText}`);
       }
       const data = await response.json();
@@ -386,10 +388,221 @@ server.registerTool(
   }
 );
 // ----------------------------------------------------
+// FIN DE LA HERRAMIENTA 3
+// ----------------------------------------------------
+
+// ----------------------------------------------------
+// HERRAMIENTA 4: ACTUALIZAR PEDIDO (REST API) -
+// ----------------------------------------------------
+server.registerTool(
+  "updateOrder",
+  {
+    title: "Actualizar Pedido Shopify (REST)",
+    description:
+      "Actualiza campos de contacto de un pedido de Shopify (nombre del cliente, teléfono, dirección y datos adicionales). Úsalo para cambiar datos específicos de un cliente asociados a un pedido.",
+    inputSchema: {
+      id: z
+        .string()
+        .describe(
+          "El ID de GraphQL (ej. 'gid://shopify/Order/123') o el ID numérico (ej. '123') del pedido a actualizar."
+        ),
+      name: z
+        .string()
+        .optional()
+        .describe("Nuevo nombre completo del cliente."),
+      phone: z
+        .string()
+        .optional()
+        .describe("Nuevo número de teléfono/WhatsApp del cliente."),
+      address1: z
+        .string()
+        .optional()
+        .describe("Nueva dirección principal del cliente."),
+      address2: z
+        .string()
+        .optional()
+        .describe(
+          "Nuevos datos adicionales de la dirección (ej. 'Apartamento 201')."
+        ),
+      city: z.string().optional().describe("Nueva ciudad del cliente."),
+      province: z
+        .string()
+        .optional()
+        .describe("Nueva provincia/departamento del cliente."),
+      country: z.string().optional().describe("Nuevo país del cliente."),
+      zip: z.string().optional().describe("Nuevo código postal del cliente."),
+    },
+    outputSchema: {
+      message: z.string(),
+      orderId: z.string(),
+      updatedFields: z.record(z.string(), z.string().nullable()).optional(),
+      noteAttributesUpdated: z
+        .array(
+          z.object({
+            name: z.string(),
+            value: z.string(),
+          })
+        )
+        .optional(),
+      timestamp: z.string().optional(),
+      details: z.string().optional(), // Para errores
+    },
+  },
+  async (input) => {
+    const storeUrl = process.env.SHOPIFY_STORE_URL;
+    const apiToken = process.env.SHOPIFY_API_TOKEN;
+
+    if (!storeUrl || !apiToken) {
+      console.error("Error: Las variables de Shopify no están configuradas.");
+      const result = {
+        message: "Error: El servidor no está configurado para Shopify.",
+        orderId: input.id,
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: result,
+      };
+    }
+
+    const { id, ...fields } = input;
+
+    try {
+      const numericId = id.startsWith("gid://shopify/Order/")
+        ? id.split("/").pop()
+        : id;
+
+      if (!numericId || !/^\d+$/.test(numericId)) {
+        throw new Error(`ID de pedido no válido: ${id}.`);
+      }
+
+      // 1. Obtener pedido actual
+      const getApiUrl = `https://${storeUrl}/admin/api/2024-04/orders/${numericId}.json`;
+      const existingResponse = await fetch(getApiUrl, {
+        method: "GET",
+        headers: {
+          "X-Shopify-Access-Token": apiToken,
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!existingResponse.ok) {
+        throw new Error(
+          `Error al obtener el pedido existente: ${existingResponse.statusText}`
+        );
+      }
+      const existingData = await existingResponse.json();
+      const order = existingData.order;
+
+      if (!order) {
+        throw new Error("No se encontró el pedido en Shopify.");
+      }
+
+      // 2. Clonamos y actualizamos los note_attributes
+      let updatedNotes = order.note_attributes ?? [];
+
+      const replaceNoteValue = (key: string, newValue?: string | null) => {
+        if (newValue === undefined) return;
+        const index = updatedNotes.findIndex((n: any) => n.name === key);
+        if (newValue === null) {
+          if (index >= 0) updatedNotes.splice(index, 1);
+        } else {
+          if (index >= 0) updatedNotes[index].value = newValue;
+          else updatedNotes.push({ name: key, value: newValue });
+        }
+      };
+
+      replaceNoteValue("Nombre(s) y Apellido", fields.name);
+      replaceNoteValue("WhatsApp", fields.phone);
+      replaceNoteValue("Ingresa tu dirección completa", fields.address1);
+      replaceNoteValue("Datos adicionales", fields.address2);
+      replaceNoteValue("Ciudad", fields.city);
+      replaceNoteValue("Departamento", fields.province);
+      replaceNoteValue("País", fields.country);
+      replaceNoteValue("Código Postal", fields.zip);
+
+      // 3. Construimos el payload
+      const payload: any = {
+        order: {
+          id: numericId,
+          note_attributes: updatedNotes,
+          shipping_address: {
+            first_name:
+              fields.name?.split(" ")[0] ?? order.shipping_address?.first_name,
+            last_name:
+              fields.name?.split(" ").slice(1).join(" ") ??
+              order.shipping_address?.last_name,
+            phone: fields.phone ?? order.shipping_address?.phone,
+            address1: fields.address1 ?? order.shipping_address?.address1,
+            address2: fields.address2 ?? order.shipping_address?.address2,
+            city: fields.city ?? order.shipping_address?.city,
+            province: fields.province ?? order.shipping_address?.province,
+            country: fields.country ?? order.shipping_address?.country,
+            zip: fields.zip ?? order.shipping_address?.zip,
+          },
+        },
+      };
+
+      if (Object.keys(payload.order.shipping_address).length === 0) {
+        delete payload.order.shipping_address;
+      }
+
+      // 4. Ejecutamos el PUT
+      const updateApiUrl = `https://${storeUrl}/admin/api/2024-04/orders/${numericId}.json`;
+      const response = await fetch(updateApiUrl, {
+        method: "PUT",
+        headers: {
+          "X-Shopify-Access-Token": apiToken,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(
+          `Error al actualizar el pedido: ${
+            response.statusText
+          }. Detalles: ${JSON.stringify(errorData)}`
+        );
+      }
+
+      const result = {
+        message: "✅ Pedido actualizado correctamente en Shopify.",
+        orderId: numericId,
+        updatedFields: fields,
+        noteAttributesUpdated: updatedNotes,
+        timestamp: new Date().toISOString(),
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      console.error(
+        "❌ Error al actualizar pedido:",
+        error instanceof Error ? error.message : error
+      );
+
+      const result = {
+        message: "❌ Error al actualizar el pedido en Shopify.",
+        orderId: input.id,
+        details: error instanceof Error ? error.message : "Error desconocido",
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: result,
+      };
+    }
+  }
+);
+// ----------------------------------------------------
 // FIN DE LA HERRAMIENTA 4
 // ----------------------------------------------------
 
-// 3. Configurar Express para "servir" el servidor MCP
+// ----------------------------------------------------
+//  Configurar Express para "servir" el servidor MCP
+// ----------------------------------------------------
+
 const app = express();
 app.use(express.json());
 
