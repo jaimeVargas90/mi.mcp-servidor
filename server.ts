@@ -1289,7 +1289,8 @@ server.registerTool(
     }
 
     try {
-      // Paso 1: Completar el borrador
+      // Paso 1: Completar el borrador (esto crea el pedido como "pendiente"
+      // y transfiere los payment_terms del borrador)
       const completeApiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders/${draftOrderId}/complete.json`;
 
       const completeResponse = await fetch(completeApiUrl, {
@@ -1324,7 +1325,8 @@ server.registerTool(
         );
       }
 
-      // Paso 2: Obtener los detalles del pedido real (para tener el 'name')
+      // Paso 2: Obtener los detalles del pedido real (incluyendo el 'name'
+      // y los 'payment_terms' que acaba de heredar)
       const getOrderApiUrl = `https://${storeUrl}/admin/api/2024-04/orders/${newOrderId}.json`;
       const getOrderResponse = await fetch(getOrderApiUrl, {
         method: "GET",
@@ -1343,18 +1345,29 @@ server.registerTool(
       const orderData = await getOrderResponse.json();
       const newOrder = orderData.order;
 
-      // +++ AÑADIR TAG DE DROPI +++
-      // Paso 3: Actualizar el pedido recién creado para añadirle el tag
+      // +++ CORRECCIÓN FINAL +++
+      // Paso 3: Actualizar el pedido para AÑADIR el tag,
+      // PERO reenviando los payment_terms para que no se borren.
+
       const updateOrderApiUrl = `https://${storeUrl}/admin/api/2024-04/orders/${newOrderId}.json`;
+
+      // Combinamos los tags existentes (si hay) con el nuevo
+      const existingTags = newOrder.tags || "";
+      const newTags = existingTags
+        ? `${existingTags}, releasit_cod_form`
+        : "releasit_cod_form";
+
       const tagPayload = {
         order: {
           id: newOrderId,
-          // Añadimos el tag que Dropi necesita para "CON RECAUDO"
-          tags: "releasit_cod_form",
+          tags: newTags,
+          // ¡¡IMPORTANTE!! Volvemos a enviar los payment_terms
+          // que obtuvimos en el Paso 2 para que no se borren.
+          payment_terms: newOrder.payment_terms,
         },
       };
 
-      await fetch(updateOrderApiUrl, {
+      const updateResponse = await fetch(updateOrderApiUrl, {
         method: "PUT",
         headers: {
           "X-Shopify-Access-Token": apiToken!,
@@ -1362,7 +1375,10 @@ server.registerTool(
         },
         body: JSON.stringify(tagPayload),
       });
-      // No necesitamos esperar o comprobar esta respuesta, es "dispara y olvida".
+
+      if (!updateResponse.ok) {
+        throw new Error("Pedido creado, pero falló al añadir el tag de Dropi.");
+      }
 
       // Paso 4: Devolver la respuesta al usuario
       const result = {
