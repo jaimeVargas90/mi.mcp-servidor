@@ -1250,7 +1250,7 @@ server.registerTool(
 // ----------------------------------------------------
 
 // ----------------------------------------------------
-// HERRAMIENTA 8: COMPLETAR BORRADOR (Paso 2)
+// HERRAMIENTA 8: COMPLETAR BORRADOR (Paso 2) - CORREGIDA
 // ----------------------------------------------------
 server.registerTool(
   "completeDraftOrder",
@@ -1286,24 +1286,22 @@ server.registerTool(
     }
 
     try {
-      // +++ CAMBIO 1: Forzar el pago pendiente +++
       // Endpoint para "completar" el borrador
       const completeApiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders/${draftOrderId}/complete.json`;
 
       const completeResponse = await fetch(completeApiUrl, {
-        method: "PUT", // Se usa PUT para completar
+        method: "PUT",
         headers: {
-          "X-Shopify-Access-Token": apiToken,
+          "X-Shopify-Access-Token": apiToken!,
           "Content-Type": "application/json",
         },
-        // --- AÑADIMOS ESTE BODY ---
-        // Forzamos explícitamente a que el pedido se cree con pago pendiente.
-        body: JSON.stringify({ payment_pending: true }),
+        // --- ¡ESTE ES EL CAMBIO CRÍTICO! ---
+        // 'false' le dice a Shopify: "Marca este pedido como 'Pagado' inmediatamente".
+        body: JSON.stringify({ payment_pending: false }),
       });
 
       if (!completeResponse.ok) {
         const errorData = await completeResponse.json();
-        // Si el error es "This order has been paid", significa que ya se completó
         if (JSON.stringify(errorData).includes("has been paid")) {
           throw new Error(
             "Este borrador de pedido ya fue completado y pagado anteriormente."
@@ -1316,7 +1314,6 @@ server.registerTool(
         );
       }
 
-      // +++ CAMBIO 2: Corregir la lectura de la respuesta +++
       const completeData = await completeResponse.json();
       const newOrderId = completeData.draft_order?.order_id;
 
@@ -1327,12 +1324,11 @@ server.registerTool(
       }
 
       // Ahora, obtenemos los detalles del pedido REAL que acabamos de crear
-      // para obtener su nombre (ej. #1005)
       const getOrderApiUrl = `https://${storeUrl}/admin/api/2024-04/orders/${newOrderId}.json`;
       const getOrderResponse = await fetch(getOrderApiUrl, {
         method: "GET",
         headers: {
-          "X-Shopify-Access-Token": apiToken,
+          "X-Shopify-Access-Token": apiToken!,
           "Content-Type": "application/json",
         },
       });
@@ -1349,7 +1345,7 @@ server.registerTool(
       const result = {
         message: `✅ Pedido confirmado y creado exitosamente. El nuevo número de pedido es ${newOrder.name}.`,
         orderId: newOrder.id,
-        orderName: newOrder.name, // ej. #1005
+        orderName: newOrder.name,
       };
       return {
         content: [{ type: "text", text: result.message }],
