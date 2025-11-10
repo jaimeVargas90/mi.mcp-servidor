@@ -1278,6 +1278,9 @@ server.registerTool(
     if (!storeUrl || !apiToken) {
       const result = {
         message: "Error: El servidor no está configurado para Shopify.",
+        orderId: undefined,
+        orderName: undefined,
+        details: undefined,
       };
       return {
         content: [{ type: "text", text: result.message }],
@@ -1295,9 +1298,10 @@ server.registerTool(
           "X-Shopify-Access-Token": apiToken!,
           "Content-Type": "application/json",
         },
-        // --- ¡ESTE ES EL CAMBIO CRÍTICO! ---
-        // 'false' le dice a Shopify: "Marca este pedido como 'Pagado' inmediatamente".
-        body: JSON.stringify({ payment_pending: false }),
+        // --- ESTE ES EL CAMBIO (REVERSIÓN) ---
+        // 'true' le dice a Shopify: "Crea el pedido como PENDIENTE".
+        // Esto es necesario para que conserve los "payment_terms" (contra entrega).
+        body: JSON.stringify({ payment_pending: true }),
       });
 
       if (!completeResponse.ok) {
@@ -1342,10 +1346,12 @@ server.registerTool(
       const orderData = await getOrderResponse.json();
       const newOrder = orderData.order;
 
+      // --- CORRECCIÓN: Normalizar el objeto 'result' ---
       const result = {
         message: `✅ Pedido confirmado y creado exitosamente. El nuevo número de pedido es ${newOrder.name}.`,
         orderId: newOrder.id,
         orderName: newOrder.name,
+        details: undefined,
       };
       return {
         content: [{ type: "text", text: result.message }],
@@ -1356,8 +1362,11 @@ server.registerTool(
         "❌ Error al completar borrador:",
         error instanceof Error ? error.message : error
       );
+      // --- CORRECCIÓN: Normalizar el objeto 'result' ---
       const result = {
         message: "❌ Error al confirmar el borrador en Shopify.",
+        orderId: undefined,
+        orderName: undefined,
         details: error instanceof Error ? error.message : "Error desconocido",
       };
       return {
