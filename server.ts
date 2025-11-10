@@ -695,6 +695,7 @@ server.registerTool(
       if (formattedPhone.length === 10 && !formattedPhone.startsWith("+")) {
         formattedPhone = `+57${formattedPhone}`;
       } else if (!formattedPhone.startsWith("+")) {
+        // Asegurarse de que tenga el + si no es el caso de 10 dígitos
         formattedPhone = `+${formattedPhone}`;
       }
     }
@@ -731,9 +732,59 @@ server.registerTool(
       { name: "País", value: input.country || "Colombia" },
     ];
 
-    // ----- CAMBIO AQUÍ: Separamos el nombre y apellido -----
     const firstName = input.name!.split(" ")[0];
-    const lastName = input.name!.split(" ").slice(1).join(" ") || firstName; // Si solo hay un nombre, se repite
+    const lastName = input.name!.split(" ").slice(1).join(" ") || firstName;
+
+    // 1. Buscar al cliente por número de teléfono
+    let customerPayload: any;
+    try {
+      const searchUrl = `https://${storeUrl}/admin/api/2024-04/customers/search.json?query=phone:${encodeURIComponent(
+        formattedPhone
+      )}`;
+      const customerResponse = await fetch(searchUrl, {
+        method: "GET",
+        headers: {
+          "X-Shopify-Access-Token": apiToken,
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (customerResponse.ok) {
+        const customerData = await customerResponse.json();
+        if (customerData.customers && customerData.customers.length > 0) {
+          // Cliente ENCONTRADO: Usar su ID
+          const customerId = customerData.customers[0].id;
+          console.log(`Cliente encontrado con ID: ${customerId}. Asociando...`);
+          customerPayload = { id: customerId };
+        } else {
+          // Cliente NO ENCONTRADO: Crear uno nuevo
+          console.log("Cliente no encontrado. Creando uno nuevo...");
+          customerPayload = {
+            first_name: firstName,
+            last_name: lastName,
+            phone: formattedPhone!,
+          };
+        }
+      } else {
+        // Si la búsqueda falla, intentamos crear uno nuevo (comportamiento anterior)
+        console.warn(
+          "Búsqueda de cliente falló. Intentando crear uno nuevo..."
+        );
+        customerPayload = {
+          first_name: firstName,
+          last_name: lastName,
+          phone: formattedPhone!,
+        };
+      }
+    } catch (error) {
+      console.error("Error buscando cliente, se intentará crear:", error);
+      // Si hay un error de red, intentamos crear uno nuevo
+      customerPayload = {
+        first_name: firstName,
+        last_name: lastName,
+        phone: formattedPhone!,
+      };
+    }
 
     // Construir el payload del nuevo pedido
     const payload = {
@@ -758,15 +809,8 @@ server.registerTool(
           zip: input.zip || "",
         },
         phone: formattedPhone!,
-
-        // ----- Añadimos el objeto 'customer' -----
-        customer: {
-          first_name: firstName,
-          last_name: lastName,
-          phone: formattedPhone!,
-          // Shopify a veces exige un email, si no lo tenemos, podemos omitirlo
-          // o crear uno falso, pero el teléfono suele ser suficiente.
-        },
+        // Usamos el payload de cliente determinado dinámicamente
+        customer: customerPayload,
       },
     };
 
@@ -783,6 +827,7 @@ server.registerTool(
 
       if (!response.ok) {
         const errorData = await response.json();
+        // Lanzamos el error para que sea capturado por el bloque catch
         throw new Error(
           `Error al crear el pedido: ${
             response.statusText
@@ -885,6 +930,8 @@ server.registerTool(
       formattedPhone = formattedPhone.replace(/[\s\-\(\)]+/g, "");
       if (formattedPhone.length === 10 && !formattedPhone.startsWith("+")) {
         formattedPhone = `+57${formattedPhone}`;
+      } else if (!formattedPhone.startsWith("+")) {
+        formattedPhone = `+${formattedPhone}`;
       }
     }
 
@@ -923,10 +970,60 @@ server.registerTool(
       { name: "País", value: input.country || "Colombia" },
     ];
 
+    // 1. Buscar al cliente por número de teléfono
+    let customerPayload: any;
+    try {
+      const searchUrl = `https://${storeUrl}/admin/api/2024-04/customers/search.json?query=phone:${encodeURIComponent(
+        formattedPhone
+      )}`;
+      const customerResponse = await fetch(searchUrl, {
+        method: "GET",
+        headers: {
+          "X-Shopify-Access-Token": apiToken,
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (customerResponse.ok) {
+        const customerData = await customerResponse.json();
+        if (customerData.customers && customerData.customers.length > 0) {
+          // Cliente ENCONTRADO: Usar su ID
+          const customerId = customerData.customers[0].id;
+          console.log(`Cliente encontrado con ID: ${customerId}. Asociando...`);
+          customerPayload = { id: customerId };
+        } else {
+          // Cliente NO ENCONTRADO: Crear uno nuevo
+          console.log("Cliente no encontrado. Creando uno nuevo...");
+          customerPayload = {
+            first_name: firstName,
+            last_name: lastName,
+            phone: formattedPhone!,
+          };
+        }
+      } else {
+        // Si la búsqueda falla, intentamos crear uno nuevo
+        console.warn(
+          "Búsqueda de cliente falló. Intentando crear uno nuevo..."
+        );
+        customerPayload = {
+          first_name: firstName,
+          last_name: lastName,
+          phone: formattedPhone!,
+        };
+      }
+    } catch (error) {
+      console.error("Error buscando cliente, se intentará crear:", error);
+      // Si hay un error de red, intentamos crear uno nuevo
+      customerPayload = {
+        first_name: firstName,
+        last_name: lastName,
+        phone: formattedPhone!,
+      };
+    }
+
     // Construir el payload del NUEVO BORRADOR
     const payload = {
       draft_order: {
-        // <-- La API de Borradores usa 'draft_order'
         line_items: [
           {
             variant_id: input.variantId,
@@ -945,11 +1042,8 @@ server.registerTool(
           country: input.country || "Colombia",
           zip: input.zip || "",
         },
-        customer: {
-          first_name: firstName,
-          last_name: lastName,
-          phone: formattedPhone!,
-        },
+        // Usamos el payload de cliente determinado dinámicamente
+        customer: customerPayload,
       },
     };
 
@@ -1001,6 +1095,9 @@ server.registerTool(
     }
   }
 );
+// ----------------------------------------------------
+// FIN DE LA HERRAMIENTA 6
+// ----------------------------------------------------
 
 // ----------------------------------------------------
 // NUEVA HERRAMIENTA 7: OBTENER BORRADOR POR ID
@@ -1132,7 +1229,7 @@ server.registerTool(
   }
 );
 // ----------------------------------------------------
-// FIN DE LA HERRAMIENTA
+// FIN DE LA HERRAMIENTA 7
 // ----------------------------------------------------
 
 // ----------------------------------------------------
@@ -1172,37 +1269,70 @@ server.registerTool(
     }
 
     try {
-      // Este es el endpoint para "completar" el borrador
-      const apiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders/${draftOrderId}/complete.json`;
+      // +++ CAMBIO 1: Forzar el pago pendiente +++
+      // Endpoint para "completar" el borrador
+      const completeApiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders/${draftOrderId}/complete.json`;
 
-      const response = await fetch(apiUrl, {
+      const completeResponse = await fetch(completeApiUrl, {
         method: "PUT", // Se usa PUT para completar
         headers: {
           "X-Shopify-Access-Token": apiToken,
           "Content-Type": "application/json",
         },
-        // Al completarlo, por defecto queda con 'payment_status: pending'
-        // Si quisiéramos marcarlo como pagado, enviaríamos:
-        // body: JSON.stringify({ payment_pending: false })
-        // Pero como lo queremos pendiente, no enviamos body.
+        // --- AÑADIMOS ESTE BODY ---
+        // Forzamos explícitamente a que el pedido se cree con pago pendiente.
+        body: JSON.stringify({ payment_pending: true }),
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
+      if (!completeResponse.ok) {
+        const errorData = await completeResponse.json();
+        // Si el error es "This order has been paid", significa que ya se completó
+        if (JSON.stringify(errorData).includes("has been paid")) {
+          throw new Error(
+            "Este borrador de pedido ya fue completado y pagado anteriormente."
+          );
+        }
         throw new Error(
           `Error al completar el borrador: ${
-            response.statusText
+            completeResponse.statusText
           }. Detalles: ${JSON.stringify(errorData)}`
         );
       }
 
-      const data = await response.json();
-      const completedOrder = data.draft_order.order; // La respuesta nos da el pedido real
+      // +++ CAMBIO 2: Corregir la lectura de la respuesta +++
+      const completeData = await completeResponse.json();
+      const newOrderId = completeData.draft_order?.order_id;
+
+      if (!newOrderId) {
+        throw new Error(
+          "El borrador se marcó como completo, pero Shopify no devolvió un ID de pedido nuevo. Es posible que ya estuviera completado."
+        );
+      }
+
+      // Ahora, obtenemos los detalles del pedido REAL que acabamos de crear
+      // para obtener su nombre (ej. #1005)
+      const getOrderApiUrl = `https://${storeUrl}/admin/api/2024-04/orders/${newOrderId}.json`;
+      const getOrderResponse = await fetch(getOrderApiUrl, {
+        method: "GET",
+        headers: {
+          "X-Shopify-Access-Token": apiToken,
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!getOrderResponse.ok) {
+        throw new Error(
+          `Pedido ${newOrderId} creado, pero no se pudo obtener su nombre.`
+        );
+      }
+
+      const orderData = await getOrderResponse.json();
+      const newOrder = orderData.order;
 
       const result = {
-        message: "✅ Pedido confirmado y creado exitosamente.",
-        orderId: completedOrder.id,
-        orderName: completedOrder.name, // ej. #1004
+        message: `✅ Pedido confirmado y creado exitosamente. El nuevo número de pedido es ${newOrder.name}.`,
+        orderId: newOrder.id,
+        orderName: newOrder.name, // ej. #1005
       };
       return {
         content: [{ type: "text", text: result.message }],
@@ -1225,7 +1355,263 @@ server.registerTool(
   }
 );
 // ----------------------------------------------------
-// FIN DE LA HERRAMIENTA 7
+// FIN DE LA HERRAMIENTA 8
+// ----------------------------------------------------
+
+// ----------------------------------------------------
+// NUEVA HERRAMIENTA 9: ACTUALIZAR BORRADOR (Paso 1.5 - Edición)
+// ----------------------------------------------------
+server.registerTool(
+  "updateDraftOrder",
+  {
+    title: "Actualizar Borrador de Pedido (Edición)",
+    description:
+      "Modifica los datos de un BORRADOR de pedido existente (ej. cambiar dirección, teléfono) ANTES de completarlo.",
+    inputSchema: {
+      draftOrderId: z
+        .number()
+        .describe("El ID numérico del BORRADOR de pedido a actualizar."),
+      name: z.string().optional().describe("Nombre(s) y Apellido del cliente."),
+      phone: z
+        .string()
+        .optional()
+        .describe("Número de WhatsApp del cliente (ej. 300...)."),
+      address1: z.string().optional().describe("Dirección principal."),
+      address2: z
+        .string()
+        .optional()
+        .describe("Datos adicionales de la dirección."),
+      city: z.string().optional().describe("Ciudad del cliente."),
+      province: z
+        .string()
+        .optional()
+        .describe("Provincia/Departamento del cliente."),
+      country: z.string().optional().describe("País del cliente."),
+      zip: z.string().optional().describe("Código postal."),
+    },
+    outputSchema: {
+      message: z.string(),
+      draftOrderId: z.number().optional(),
+      details: z.string().optional(),
+    },
+  },
+  async ({ draftOrderId, ...fields }) => {
+    const storeUrl = process.env.SHOPIFY_STORE_URL;
+    const apiToken = process.env.SHOPIFY_API_TOKEN;
+    if (!storeUrl || !apiToken) {
+      const result = {
+        message: "Error: El servidor no está configurado para Shopify.",
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: result,
+      };
+    }
+
+    try {
+      // 1. Obtener el borrador actual para no perder datos
+      const getApiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders/${draftOrderId}.json`;
+      const getResponse = await fetch(getApiUrl, {
+        method: "GET",
+        headers: { "X-Shopify-Access-Token": apiToken },
+      });
+      if (!getResponse.ok)
+        throw new Error("No se pudo obtener el borrador existente.");
+      const { draft_order: existingDraft } = await getResponse.json();
+
+      // Formatear teléfono si se proporciona uno nuevo
+      let formattedPhone = fields.phone;
+      if (formattedPhone) {
+        formattedPhone = formattedPhone.replace(/[\s\-\(\)]+/g, "");
+        if (formattedPhone.length === 10 && !formattedPhone.startsWith("+")) {
+          formattedPhone = `+57${formattedPhone}`;
+        } else if (!formattedPhone.startsWith("+")) {
+          formattedPhone = `+${formattedPhone}`;
+        }
+      }
+
+      const newName = fields.name;
+      const firstName = newName
+        ? newName.split(" ")[0]
+        : existingDraft.customer?.first_name;
+      const lastName = newName
+        ? newName.split(" ").slice(1).join(" ") || firstName
+        : existingDraft.customer?.last_name;
+
+      // 2. Construir el payload de actualización
+      const payload = {
+        draft_order: {
+          id: draftOrderId,
+          // Usamos los datos nuevos, o mantenemos los existentes si no se proporcionó nada
+          shipping_address: {
+            first_name: firstName,
+            last_name: lastName,
+            phone: formattedPhone || existingDraft.shipping_address?.phone,
+            address1:
+              fields.address1 || existingDraft.shipping_address?.address1,
+            address2:
+              fields.address2 || existingDraft.shipping_address?.address2,
+            city: fields.city || existingDraft.shipping_address?.city,
+            province:
+              fields.province || existingDraft.shipping_address?.province,
+            country: fields.country || existingDraft.shipping_address?.country,
+            zip: fields.zip || existingDraft.shipping_address?.zip,
+          },
+          customer: {
+            id: existingDraft.customer?.id,
+            first_name: firstName,
+            last_name: lastName,
+            phone: formattedPhone || existingDraft.customer?.phone,
+          },
+          // También actualizamos las notas
+          note_attributes: (existingDraft.note_attributes || []).map(
+            (attr: any) => {
+              if (attr.name === "Nombre(s) y Apellido" && fields.name)
+                return { ...attr, value: fields.name };
+              if (attr.name === "WhatsApp" && formattedPhone)
+                return { ...attr, value: formattedPhone };
+              if (
+                attr.name === "Ingresa tu dirección completa" &&
+                fields.address1
+              )
+                return { ...attr, value: fields.address1 };
+              if (attr.name === "Datos adicionales" && fields.address2)
+                return { ...attr, value: fields.address2 };
+              if (attr.name === "Ciudad" && fields.city)
+                return { ...attr, value: fields.city };
+              if (attr.name === "Departamento" && fields.province)
+                return { ...attr, value: fields.province };
+              return attr;
+            }
+          ),
+        },
+      };
+
+      // 3. Enviar la actualización (PUT)
+      const updateApiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders/${draftOrderId}.json`;
+      const response = await fetch(updateApiUrl, {
+        method: "PUT",
+        headers: {
+          "X-Shopify-Access-Token": apiToken,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(
+          `Error al actualizar el borrador: ${JSON.stringify(errorData)}`
+        );
+      }
+
+      const data = await response.json();
+      const updatedDraft = data.draft_order;
+
+      const result = {
+        message: `✅ Borrador ${draftOrderId} actualizado. El total es ${updatedDraft.total_price}. ¿Confirmo el pedido?`,
+        draftOrderId: updatedDraft.id,
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      console.error("❌ Error al actualizar borrador:", error);
+      const result = {
+        message: "❌ Error al actualizar el borrador en Shopify.",
+        details: error instanceof Error ? error.message : "Error desconocido",
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: result,
+      };
+    }
+  }
+);
+// ----------------------------------------------------
+// FIN DE LA HERRAMIENTA 9
+// ----------------------------------------------------
+
+// ----------------------------------------------------
+// NUEVA HERRAMIENTA 10: ELIMINAR BORRADOR (Cancelación)
+// ----------------------------------------------------
+server.registerTool(
+  "deleteDraftOrder",
+  {
+    title: "Eliminar Borrador de Pedido (Cancelación)",
+    description:
+      "Elimina permanentemente un BORRADOR de pedido si el cliente ya no lo desea. Esto no se puede deshacer.",
+    inputSchema: {
+      draftOrderId: z
+        .number()
+        .describe(
+          "El ID numérico del BORRADOR de pedido a eliminar (ej. 12345)."
+        ),
+    },
+    outputSchema: {
+      message: z.string(),
+      deletedDraftId: z.number(),
+      details: z.string().optional(), // Para errores
+    },
+  },
+  async ({ draftOrderId }) => {
+    const storeUrl = process.env.SHOPIFY_STORE_URL;
+    const apiToken = process.env.SHOPIFY_API_TOKEN;
+    if (!storeUrl || !apiToken) {
+      const result = {
+        message: "Error: El servidor no está configurado para Shopify.",
+        deletedDraftId: draftOrderId,
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: result,
+      };
+    }
+
+    try {
+      const apiUrl = `https://{storeUrl}/admin/api/2024-04/draft_orders/{draftOrderId}.json`;
+
+      const response = await fetch(apiUrl, {
+        method: "DELETE", // Se usa DELETE para eliminar
+        headers: {
+          "X-Shopify-Access-Token": apiToken,
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(
+          `Error al eliminar el borrador: ${JSON.stringify(errorData)}`
+        );
+      }
+
+      // Si Shopify devuelve 200 OK con un body vacío, fue exitoso.
+      const result = {
+        message: `✅ Borrador de pedido ${draftOrderId} eliminado correctamente.`,
+        deletedDraftId: draftOrderId,
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      console.error("❌ Error al eliminar borrador:", error);
+      const result = {
+        message: "❌ Error al eliminar el borrador en Shopify.",
+        deletedDraftId: draftOrderId,
+        details: error instanceof Error ? error.message : "Error desconocido",
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: result,
+      };
+    }
+  }
+);
+// ----------------------------------------------------
+// FIN DE LA HERRAMIENTA 10
 // ----------------------------------------------------
 
 // ----------------------------------------------------
