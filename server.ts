@@ -1629,17 +1629,20 @@ server.registerTool(
     },
     outputSchema: {
       message: z.string(),
-      deletedDraftId: z.number(),
-      details: z.string().optional(), // Para errores
+      deletedDraftId: z.number().optional(), // Lo ponemos opcional para el catch
+      details: z.string().optional(),
     },
   },
   async ({ draftOrderId }) => {
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
+
+    // --- CORRECCIÓN: Normalizar el objeto 'result' ---
     if (!storeUrl || !apiToken) {
       const result = {
         message: "Error: El servidor no está configurado para Shopify.",
         deletedDraftId: draftOrderId,
+        details: "Variables de entorno no configuradas.",
       };
       return {
         content: [{ type: "text", text: result.message }],
@@ -1648,12 +1651,14 @@ server.registerTool(
     }
 
     try {
-      const apiUrl = `https://{storeUrl}/admin/api/2024-04/draft_orders/{draftOrderId}.json`;
+      // --- CORRECCIÓN: URL con '$' ---
+      const apiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders/${draftOrderId}.json`;
 
       const response = await fetch(apiUrl, {
-        method: "DELETE", // Se usa DELETE para eliminar
+        method: "DELETE",
         headers: {
-          "X-Shopify-Access-Token": apiToken,
+          // --- CORRECCIÓN: '!' en apiToken ---
+          "X-Shopify-Access-Token": apiToken!,
           "Content-Type": "application/json",
         },
       });
@@ -1665,10 +1670,11 @@ server.registerTool(
         );
       }
 
-      // Si Shopify devuelve 200 OK con un body vacío, fue exitoso.
+      // --- CORRECCIÓN: Normalizar el objeto 'result' ---
       const result = {
         message: `✅ Borrador de pedido ${draftOrderId} eliminado correctamente.`,
         deletedDraftId: draftOrderId,
+        details: undefined,
       };
       return {
         content: [{ type: "text", text: result.message }],
@@ -1676,9 +1682,11 @@ server.registerTool(
       };
     } catch (error) {
       console.error("❌ Error al eliminar borrador:", error);
+
+      // --- CORRECCIÓN: Normalizar el objeto 'result' ---
       const result = {
         message: "❌ Error al eliminar el borrador en Shopify.",
-        deletedDraftId: draftOrderId,
+        deletedDraftId: draftOrderId, // Devolvemos el ID que se intentó borrar
         details: error instanceof Error ? error.message : "Error desconocido",
       };
       return {
