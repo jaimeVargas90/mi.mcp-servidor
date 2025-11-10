@@ -1003,7 +1003,140 @@ server.registerTool(
 );
 
 // ----------------------------------------------------
-// HERRAMIENTA 7: COMPLETAR BORRADOR (Paso 2)
+// NUEVA HERRAMIENTA 7: OBTENER BORRADOR POR ID
+// ----------------------------------------------------
+server.registerTool(
+  "getDraftOrderById",
+  {
+    title: "Obtener Borrador de Pedido por ID",
+    description:
+      "Obtiene los detalles completos de un ÚNICO borrador de pedido (productos, notas, etc.) usando su ID numérico.",
+    inputSchema: {
+      id: z
+        .number()
+        .describe("El ID numérico del borrador de pedido (ej. 112233)"),
+    },
+    outputSchema: {
+      draftOrder: z
+        .object({
+          id: z.number(),
+          createdAt: z.string(),
+          totalPrice: z.string(),
+          customerName: z.string().nullable(),
+          lineItems: z
+            .array(
+              z.object({
+                title: z.string(),
+                quantity: z.number(),
+              })
+            )
+            .nullable(),
+        })
+        .nullable(),
+    },
+  },
+  async ({ id }) => {
+    const storeUrl = process.env.SHOPIFY_STORE_URL;
+    const apiToken = process.env.SHOPIFY_API_TOKEN;
+    if (!storeUrl || !apiToken) {
+      const result = {
+        message: "Error: El servidor no está configurado para Shopify.",
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: { draftOrder: null },
+      };
+    }
+
+    try {
+      // Usamos el endpoint para un solo borrador
+      const apiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders/${id}.json`;
+
+      const response = await fetch(apiUrl, {
+        method: "GET",
+        headers: {
+          "X-Shopify-Access-Token": apiToken,
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(
+          `Error al obtener borrador: ${
+            response.statusText
+          }. Detalles: ${JSON.stringify(errorData)}`
+        );
+      }
+
+      const data = await response.json();
+      const draft = data.draft_order; // El objeto se llama 'draft_order'
+
+      if (!draft) {
+        const result = {
+          message: `Borrador de pedido con ID ${id} no encontrado.`,
+        };
+        return {
+          content: [{ type: "text", text: result.message }],
+          structuredContent: { draftOrder: null },
+        };
+      }
+
+      // Reutilizamos la lógica para encontrar el nombre del cliente
+      let customerName: string | null = null;
+      if (draft.note_attributes && draft.note_attributes.length > 0) {
+        const nameAttr = draft.note_attributes.find(
+          (attr: any) => attr.name === "Nombre(s) y Apellido"
+        );
+        if (nameAttr) customerName = nameAttr.value;
+      }
+      if (!customerName && draft.customer) {
+        customerName = `${draft.customer.first_name || ""} ${
+          draft.customer.last_name || ""
+        }`.trim();
+      }
+
+      // Formateamos la respuesta
+      const formattedDraft = {
+        id: draft.id,
+        createdAt: draft.created_at,
+        totalPrice: draft.total_price,
+        customerName: customerName || "Sin cliente",
+        lineItems:
+          draft.line_items?.map((item: any) => ({
+            title: item.title,
+            quantity: item.quantity,
+          })) || [],
+      };
+
+      return {
+        content: [
+          { type: "text", text: JSON.stringify(formattedDraft, null, 2) },
+        ],
+        structuredContent: { draftOrder: formattedDraft },
+      };
+    } catch (error) {
+      console.error(
+        "❌ Error al obtener borrador por ID:",
+        error instanceof Error ? error.message : error
+      );
+      const result = {
+        message: "❌ Error al consultar el borrador de pedido.",
+        details: error instanceof Error ? error.message : "Error desconocido",
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: { draftOrder: null },
+      };
+    }
+  }
+);
+// ----------------------------------------------------
+// FIN DE LA HERRAMIENTA
+// ----------------------------------------------------
+
+// ----------------------------------------------------
+// HERRAMIENTA 8: COMPLETAR BORRADOR (Paso 2)
 // ----------------------------------------------------
 server.registerTool(
   "completeDraftOrder",
