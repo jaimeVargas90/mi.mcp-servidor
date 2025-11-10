@@ -1289,7 +1289,7 @@ server.registerTool(
     }
 
     try {
-      // Endpoint para "completar" el borrador
+      // Paso 1: Completar el borrador
       const completeApiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders/${draftOrderId}/complete.json`;
 
       const completeResponse = await fetch(completeApiUrl, {
@@ -1298,9 +1298,6 @@ server.registerTool(
           "X-Shopify-Access-Token": apiToken!,
           "Content-Type": "application/json",
         },
-        // --- ESTE ES EL CAMBIO (REVERSIÓN) ---
-        // 'true' le dice a Shopify: "Crea el pedido como PENDIENTE".
-        // Esto es necesario para que conserve los "payment_terms" (contra entrega).
         body: JSON.stringify({ payment_pending: true }),
       });
 
@@ -1323,11 +1320,11 @@ server.registerTool(
 
       if (!newOrderId) {
         throw new Error(
-          "El borrador se marcó como completo, pero Shopify no devolvió un ID de pedido nuevo. Es posible que ya estuviera completado."
+          "El borrador se marcó como completo, pero Shopify no devolvió un ID de pedido nuevo."
         );
       }
 
-      // Ahora, obtenemos los detalles del pedido REAL que acabamos de crear
+      // Paso 2: Obtener los detalles del pedido real (para tener el 'name')
       const getOrderApiUrl = `https://${storeUrl}/admin/api/2024-04/orders/${newOrderId}.json`;
       const getOrderResponse = await fetch(getOrderApiUrl, {
         method: "GET",
@@ -1346,9 +1343,30 @@ server.registerTool(
       const orderData = await getOrderResponse.json();
       const newOrder = orderData.order;
 
-      // --- CORRECCIÓN: Normalizar el objeto 'result' ---
+      // +++ AÑADIR TAG DE DROPI +++
+      // Paso 3: Actualizar el pedido recién creado para añadirle el tag
+      const updateOrderApiUrl = `https://${storeUrl}/admin/api/2024-04/orders/${newOrderId}.json`;
+      const tagPayload = {
+        order: {
+          id: newOrderId,
+          // Añadimos el tag que Dropi necesita para "CON RECAUDO"
+          tags: "releasit_cod_form",
+        },
+      };
+
+      await fetch(updateOrderApiUrl, {
+        method: "PUT",
+        headers: {
+          "X-Shopify-Access-Token": apiToken!,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(tagPayload),
+      });
+      // No necesitamos esperar o comprobar esta respuesta, es "dispara y olvida".
+
+      // Paso 4: Devolver la respuesta al usuario
       const result = {
-        message: `✅ Pedido confirmado y creado exitosamente. El nuevo número de pedido es ${newOrder.name}.`,
+        message: `✅ Pedido ${newOrder.name} confirmado. Se añadió el tag para Dropi.`,
         orderId: newOrder.id,
         orderName: newOrder.name,
         details: undefined,
@@ -1362,7 +1380,6 @@ server.registerTool(
         "❌ Error al completar borrador:",
         error instanceof Error ? error.message : error
       );
-      // --- CORRECCIÓN: Normalizar el objeto 'result' ---
       const result = {
         message: "❌ Error al confirmar el borrador en Shopify.",
         orderId: undefined,
