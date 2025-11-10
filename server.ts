@@ -1615,6 +1615,145 @@ server.registerTool(
 // ----------------------------------------------------
 
 // ----------------------------------------------------
+// NUEVA HERRAMIENTA 11: BUSCAR BORRADORES POR TELÉFONO
+// ----------------------------------------------------
+server.registerTool(
+  "findDraftOrdersByPhone",
+  {
+    title: "Buscar Borradores de Pedido por Teléfono",
+    description:
+      "Busca borradores de pedido 'abiertos' (pendientes) asociados a un número de teléfono de cliente.",
+    inputSchema: {
+      phone: z
+        .string()
+        .describe(
+          "El número de teléfono/WhatsApp del cliente (ej. 300... o +57...)."
+        ),
+    },
+    outputSchema: {
+      draftOrders: z.array(
+        z.object({
+          id: z.number(), // ID del borrador
+          name: z.string(), // Nombre del borrador (ej. #D301)
+          totalPrice: z.string(),
+          createdAt: z.string(),
+        })
+      ),
+    },
+  },
+  async ({ phone }) => {
+    const storeUrl = process.env.SHOPIFY_STORE_URL;
+    const apiToken = process.env.SHOPIFY_API_TOKEN;
+    if (!storeUrl || !apiToken) {
+      const result = {
+        message: "Error: El servidor no está configurado para Shopify.",
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: { draftOrders: [] },
+      };
+    }
+
+    // 1. Formatear el teléfono (reutilizamos la lógica)
+    let formattedPhone = phone;
+    if (formattedPhone) {
+      formattedPhone = formattedPhone.replace(/[\s\-\(\)]+/g, "");
+      if (formattedPhone.length === 10 && !formattedPhone.startsWith("+")) {
+        formattedPhone = `+57${formattedPhone}`;
+      } else if (!formattedPhone.startsWith("+")) {
+        formattedPhone = `+${formattedPhone}`;
+      }
+    }
+
+    try {
+      // 2. Buscar al cliente por número de teléfono
+      const searchUrl = `https://${storeUrl}/admin/api/2024-04/customers/search.json?query=phone:${encodeURIComponent(
+        formattedPhone
+      )}`;
+      const customerResponse = await fetch(searchUrl, {
+        method: "GET",
+        headers: {
+          "X-Shopify-Access-Token": apiToken,
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!customerResponse.ok) {
+        throw new Error("Error al buscar el cliente por teléfono.");
+      }
+
+      const customerData = await customerResponse.json();
+      if (!customerData.customers || customerData.customers.length === 0) {
+        // No se encontró el cliente, por lo tanto no hay borradores.
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No se encontró ningún cliente con ese teléfono.",
+            },
+          ],
+          structuredContent: { draftOrders: [] },
+        };
+      }
+
+      const customerId = customerData.customers[0].id;
+
+      // 3. Buscar borradores de pedido 'abiertos' para ese cliente
+      const draftApiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders.json?customer_id=${customerId}&status=open`;
+      const draftResponse = await fetch(draftApiUrl, {
+        method: "GET",
+        headers: {
+          "X-Shopify-Access-Token": apiToken,
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!draftResponse.ok) {
+        throw new Error(
+          "Cliente encontrado, pero falló la búsqueda de sus borradores."
+        );
+      }
+
+      const draftData = await draftResponse.json();
+      const openDrafts = draftData.draft_orders || [];
+
+      // 4. Formatear la salida
+      const formattedDrafts = openDrafts.map((d: any) => ({
+        id: d.id,
+        name: d.name, // ej. #D301
+        totalPrice: d.total_price,
+        createdAt: d.created_at,
+      }));
+
+      const message =
+        formattedDrafts.length > 0
+          ? `Se encontraron ${
+              formattedDrafts.length
+            } borradores abiertos: ${JSON.stringify(formattedDrafts, null, 2)}`
+          : "El cliente no tiene borradores de pedido abiertos.";
+
+      return {
+        content: [{ type: "text", text: message }],
+        structuredContent: { draftOrders: formattedDrafts },
+      };
+    } catch (error) {
+      console.error("❌ Error al buscar borradores por teléfono:", error);
+      const result = {
+        message: "❌ Error al buscar los borradores de pedido.",
+        details: error instanceof Error ? error.message : "Error desconocido",
+      };
+      return {
+        content: [{ type: "text", text: result.message }],
+        structuredContent: { draftOrders: [] },
+      };
+    }
+  }
+);
+// ----------------------------------------------------
+// FIN DE LA HERRAMIENTA 11
+// ----------------------------------------------------
+
+// ----------------------------------------------------
 //  Configurar Express para "servir" el servidor MCP
 // ----------------------------------------------------
 
