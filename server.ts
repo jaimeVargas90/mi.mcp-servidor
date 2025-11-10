@@ -1444,22 +1444,26 @@ server.registerTool(
       country: z.string().optional().describe("País del cliente."),
       zip: z.string().optional().describe("Código postal."),
     },
+    // +++ CAMBIO 1: Actualizar el outputSchema +++
     outputSchema: {
       message: z.string(),
       draftOrderId: z.number().optional(),
       details: z.string().optional(),
+      // Añadimos el objeto completo del borrador (usamos z.any() para aceptar todo)
+      updatedDraft: z.any().optional(),
     },
   },
   async ({ draftOrderId, ...fields }) => {
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
 
-    // --- CORRECCIÓN 1: Normalizar el objeto 'result' ---
+    // +++ CAMBIO 2: Normalizar el 'result' (añadir updatedDraft) +++
     if (!storeUrl || !apiToken) {
       const result = {
         message: "Error: El servidor no está configurado para Shopify.",
         draftOrderId: undefined,
         details: undefined,
+        updatedDraft: undefined, // <-- AÑADIDO
       };
       return {
         content: [{ type: "text", text: result.message }],
@@ -1472,14 +1476,13 @@ server.registerTool(
       const getApiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders/${draftOrderId}.json`;
       const getResponse = await fetch(getApiUrl, {
         method: "GET",
-        // --- CORRECCIÓN 2: Añadir '!' a apiToken ---
         headers: { "X-Shopify-Access-Token": apiToken! },
       });
       if (!getResponse.ok)
         throw new Error("No se pudo obtener el borrador existente.");
       const { draft_order: existingDraft } = await getResponse.json();
 
-      // Formatear teléfono si se proporciona uno nuevo
+      // ... (lógica de formatear teléfono, nombres, etc. sin cambios)
       let formattedPhone = fields.phone;
       if (formattedPhone) {
         formattedPhone = formattedPhone.replace(/[\s\-\(\)]+/g, "");
@@ -1489,7 +1492,6 @@ server.registerTool(
           formattedPhone = `+${formattedPhone}`;
         }
       }
-
       const newName = fields.name;
       const firstName = newName
         ? newName.split(" ")[0]
@@ -1497,13 +1499,11 @@ server.registerTool(
       const lastName = newName
         ? newName.split(" ").slice(1).join(" ") || firstName
         : existingDraft.customer?.last_name;
-
-      // Asignar fulfillment_service a los line_items existentes
       const updatedLineItems = existingDraft.line_items.map((item: any) => ({
         id: item.id,
         variant_id: item.variant_id,
         quantity: item.quantity,
-        fulfillment_service: "fulfillment-dropi", // El handle de tu app Dropi
+        fulfillment_service: "fulfillment-dropi",
       }));
 
       // 2. Construir el payload de actualización
@@ -1511,7 +1511,6 @@ server.registerTool(
         draft_order: {
           id: draftOrderId,
           line_items: updatedLineItems,
-          // Añadir los términos de pago "Pago tras la recepción"
           payment_terms: {
             payment_terms_type: "due_on_receipt",
           },
@@ -1535,7 +1534,6 @@ server.registerTool(
             last_name: lastName,
             phone: formattedPhone || existingDraft.customer?.phone,
           },
-          // También actualizamos las notas
           note_attributes: (existingDraft.note_attributes || []).map(
             (attr: any) => {
               if (attr.name === "Nombre(s) y Apellido" && fields.name)
@@ -1564,7 +1562,6 @@ server.registerTool(
       const response = await fetch(updateApiUrl, {
         method: "PUT",
         headers: {
-          // --- CORRECCIÓN 2: Añadir '!' a apiToken ---
           "X-Shopify-Access-Token": apiToken!,
           "Content-Type": "application/json",
         },
@@ -1579,26 +1576,40 @@ server.registerTool(
       }
 
       const data = await response.json();
-      const updatedDraft = data.draft_order;
+      const updatedDraft = data.draft_order; // <-- Este es el objeto que quieres
 
-      // --- CORRECCIÓN 1: Normalizar el objeto 'result' ---
+      // +++ CAMBIO 3: Actualizar el 'result' final +++
       const result = {
         message: `✅ Borrador ${draftOrderId} actualizado. El total es ${updatedDraft.total_price}. ¿Confirmo el pedido?`,
         draftOrderId: updatedDraft.id,
         details: undefined,
+        updatedDraft: updatedDraft, // <-- AÑADIDO (El objeto completo)
       };
+
       return {
-        content: [{ type: "text", text: result.message }],
+        // También devolvemos el JSON en el texto para que lo veas
+        content: [
+          { type: "text", text: result.message },
+          {
+            type: "text",
+            text: `Datos actualizados: ${JSON.stringify(
+              updatedDraft,
+              null,
+              2
+            )}`,
+          },
+        ],
         structuredContent: result,
       };
     } catch (error) {
       console.error("❌ Error al actualizar borrador:", error);
 
-      // --- CORRECCIÓN 1: Normalizar el objeto 'result' ---
+      // +++ CAMBIO 4: Normalizar el 'result' de error +++
       const result = {
         message: "❌ Error al actualizar el borrador en Shopify.",
         draftOrderId: undefined,
         details: error instanceof Error ? error.message : "Error desconocido",
+        updatedDraft: undefined, // <-- AÑADIDO
       };
       return {
         content: [{ type: "text", text: result.message }],
