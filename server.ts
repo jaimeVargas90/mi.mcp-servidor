@@ -1,10 +1,12 @@
-import {
-  McpServer,
-  ResourceTemplate,
-} from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import express from "express";
 import { z } from "zod";
+
+// +++ CACHÉ +++
+// Almacén de caché en memoria y tiempo de vida (5 minutos)
+const cache = new Map<string, { data: any; timestamp: number }>();
+const CACHE_TTL = 5 * 60 * 1000;
 
 // 1. Crear el servidor MCP
 const server = new McpServer({
@@ -38,7 +40,7 @@ server.registerTool(
   {
     title: "List Shopify Products",
     description:
-      "Get a list of the first 5 products from the Shopify store, including price, description, and images.",
+      "Get a list of the first 5 products from the Shopify store, including price, description, images, and variantId.",
     inputSchema: {},
     outputSchema: {
       products: z.array(
@@ -55,6 +57,22 @@ server.registerTool(
     },
   },
   async () => {
+    const cacheKey = "listProducts";
+    const cachedData = cache.get(cacheKey);
+
+    // 1. Si está en caché y no ha expirado, devolverlo al instante
+    if (cachedData && Date.now() - cachedData.timestamp < CACHE_TTL) {
+      console.log("Devolviendo listShopifyProducts desde la CACHÉ...");
+      return {
+        content: [
+          { type: "text", text: JSON.stringify(cachedData.data, null, 2) },
+        ],
+        structuredContent: { products: cachedData.data },
+      };
+    }
+
+    console.log("Generando listShopifyProducts (sin caché)...");
+
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
     if (!storeUrl || !apiToken) {
@@ -82,6 +100,7 @@ server.registerTool(
         throw new Error(`Error de Shopify: ${response.statusText}`);
       }
       const data = await response.json();
+
       const products = data.products.map((p: any) => {
         const cleanDescription = p.body_html
           ? p.body_html.replace(/<[^>]*>?/gm, "")
@@ -99,6 +118,13 @@ server.registerTool(
           productUrl: `${storeBaseUrl}/products/${p.handle}`,
         };
       });
+
+      // 2. Guardar el nuevo resultado en la caché
+      cache.set(cacheKey, {
+        data: products,
+        timestamp: Date.now(),
+      });
+
       return {
         content: [{ type: "text", text: JSON.stringify(products, null, 2) }],
         structuredContent: { products },
@@ -118,7 +144,6 @@ server.registerTool(
     }
   }
 );
-
 // ----------------------------------------------------
 // FIN DE LA HERRAMIENTA 1
 // ----------------------------------------------------
