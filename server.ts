@@ -14,24 +14,6 @@ const server = new McpServer({
   version: "1.0.0",
 });
 
-// 2. Registrar una herramienta
-server.registerTool(
-  "add",
-  {
-    title: "Addition Tool",
-    description: "Add two numbers",
-    inputSchema: { a: z.number(), b: z.number() },
-    outputSchema: { result: z.number() },
-  },
-  async ({ a, b }) => {
-    const output = { result: a + b };
-    return {
-      content: [{ type: "text", text: JSON.stringify(output) }],
-      structuredContent: output,
-    };
-  }
-);
-
 // ----------------------------------------------------
 // HERRAMIENTA 1: LISTAR PRODUCTOS
 // ----------------------------------------------------
@@ -869,7 +851,7 @@ server.registerTool(
 // ----------------------------------------------------
 
 // ----------------------------------------------------
-// HERRAMIENTA 6: CREAR BORRADOR (Paso 1) - CORREGIDA
+// HERRAMIENTA 6: CREAR BORRADOR (Paso 1)
 // ----------------------------------------------------
 server.registerTool(
   "createDraftOrder",
@@ -1250,7 +1232,7 @@ server.registerTool(
 // ----------------------------------------------------
 
 // ----------------------------------------------------
-// HERRAMIENTA 8: COMPLETAR BORRADOR (Paso 2) - CORREGIDA
+// HERRAMIENTA 8: COMPLETAR BORRADOR (Paso 2)
 // ----------------------------------------------------
 server.registerTool(
   "completeDraftOrder",
@@ -1345,7 +1327,6 @@ server.registerTool(
       const orderData = await getOrderResponse.json();
       const newOrder = orderData.order;
 
-      // +++ CORRECCIÓN FINAL +++
       // Paso 3: Actualizar el pedido para AÑADIR el tag,
       // PERO reenviando los payment_terms para que no se borren.
 
@@ -1414,7 +1395,7 @@ server.registerTool(
 // ----------------------------------------------------
 
 // ----------------------------------------------------
-// NUEVA HERRAMIENTA 9: ACTUALIZAR BORRADOR (Paso 1.5 - Edición)
+// NUEVA HERRAMIENTA 9: ACTUALIZAR BORRADOR
 // ----------------------------------------------------
 server.registerTool(
   "updateDraftOrder",
@@ -1578,7 +1559,6 @@ server.registerTool(
       const data = await response.json();
       const updatedDraft = data.draft_order; // <-- Este es el objeto que quieres
 
-      // +++ CAMBIO 3: Actualizar el 'result' final +++
       const result = {
         message: `✅ Borrador ${draftOrderId} actualizado. El total es ${updatedDraft.total_price}. ¿Confirmo el pedido?`,
         draftOrderId: updatedDraft.id,
@@ -1604,7 +1584,6 @@ server.registerTool(
     } catch (error) {
       console.error("❌ Error al actualizar borrador:", error);
 
-      // +++ CAMBIO 4: Normalizar el 'result' de error +++
       const result = {
         message: "❌ Error al actualizar el borrador en Shopify.",
         draftOrderId: undefined,
@@ -1662,7 +1641,6 @@ server.registerTool(
     }
 
     try {
-      // --- CORRECCIÓN: URL con '$' ---
       const apiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders/${draftOrderId}.json`;
 
       const response = await fetch(apiUrl, {
@@ -1681,7 +1659,6 @@ server.registerTool(
         );
       }
 
-      // --- CORRECCIÓN: Normalizar el objeto 'result' ---
       const result = {
         message: `✅ Borrador de pedido ${draftOrderId} eliminado correctamente.`,
         deletedDraftId: draftOrderId,
@@ -1694,7 +1671,6 @@ server.registerTool(
     } catch (error) {
       console.error("❌ Error al eliminar borrador:", error);
 
-      // --- CORRECCIÓN: Normalizar el objeto 'result' ---
       const result = {
         message: "❌ Error al eliminar el borrador en Shopify.",
         deletedDraftId: draftOrderId, // Devolvemos el ID que se intentó borrar
@@ -1711,62 +1687,83 @@ server.registerTool(
 // FIN DE LA HERRAMIENTA 10
 // ----------------------------------------------------
 
-// ----------------------------------------------------
-// NUEVA HERRAMIENTA 11: BUSCAR BORRADORES POR TELÉFONO
-// ----------------------------------------------------
+// --------------------------------------------------------------
+// NUEVA HERRAMIENTA 11: BUSCAR BORRADORES POR TELÉFONO Y NOMBRE
+// --------------------------------------------------------------
 server.registerTool(
-  "findDraftOrdersByPhone",
+  "findDraftOrders",
   {
-    title: "Buscar Borradores de Pedido por Teléfono",
+    title: "Buscar Borradores por Teléfono o Nombre",
     description:
-      "Busca borradores de pedido 'abiertos' (pendientes) asociados a un número de teléfono de cliente.",
+      "Busca borradores de pedido 'abiertos' de un cliente usando su teléfono o su nombre completo/parcial.",
     inputSchema: {
       phone: z
         .string()
-        .describe(
-          "El número de teléfono/WhatsApp del cliente (ej. 300... o +57...)."
-        ),
+        .optional()
+        .describe("Teléfono/WhatsApp del cliente (300... o +57...)."),
+      name: z
+        .string()
+        .optional()
+        .describe("Nombre o apellido del cliente (ej. 'Juan', 'Pérez')."),
     },
     outputSchema: {
       draftOrders: z.array(
         z.object({
-          id: z.number(), // ID del borrador
-          name: z.string(), // Nombre del borrador (ej. #D301)
+          id: z.number(),
+          name: z.string(),
           totalPrice: z.string(),
           createdAt: z.string(),
         })
       ),
     },
   },
-  async ({ phone }) => {
+
+  async ({ phone, name }) => {
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
+
     if (!storeUrl || !apiToken) {
-      const result = {
-        message: "Error: El servidor no está configurado para Shopify.",
-      };
       return {
-        content: [{ type: "text", text: result.message }],
+        content: [{ type: "text", text: "Error: Shopify no configurado." }],
         structuredContent: { draftOrders: [] },
       };
     }
 
-    // 1. Formatear el teléfono (reutilizamos la lógica)
-    let formattedPhone = phone;
-    if (formattedPhone) {
-      formattedPhone = formattedPhone.replace(/[\s\-\(\)]+/g, "");
-      if (formattedPhone.length === 10 && !formattedPhone.startsWith("+")) {
-        formattedPhone = `+57${formattedPhone}`;
-      } else if (!formattedPhone.startsWith("+")) {
-        formattedPhone = `+${formattedPhone}`;
-      }
+    // ✅ Validación: se requiere al menos uno
+    if (!phone && !name) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Debes proporcionar al menos 'phone' o 'name'.",
+          },
+        ],
+        structuredContent: { draftOrders: [] },
+      };
     }
 
+    // ✅ 1. Construir la query dinámica
+    let query = "";
+
+    if (phone) {
+      let formatted = phone.replace(/[\s\-\(\)]+/g, "");
+      if (formatted.length === 10 && !formatted.startsWith("+")) {
+        formatted = `+57${formatted}`;
+      } else if (!formatted.startsWith("+")) {
+        formatted = `+${formatted}`;
+      }
+      query = `phone:${formatted}`;
+    }
+
+    if (name) {
+      const cleanName = encodeURIComponent(name.trim());
+      query = query ? `${query} OR name:*${cleanName}*` : `name:*${cleanName}*`;
+    }
+
+    // ✅ 2. Buscar el cliente
+    const searchUrl = `https://${storeUrl}/admin/api/2024-04/customers/search.json?query=${query}`;
+
     try {
-      // 2. Buscar al cliente por número de teléfono
-      const searchUrl = `https://${storeUrl}/admin/api/2024-04/customers/search.json?query=phone:${encodeURIComponent(
-        formattedPhone
-      )}`;
       const customerResponse = await fetch(searchUrl, {
         method: "GET",
         headers: {
@@ -1775,28 +1772,21 @@ server.registerTool(
         },
       });
 
-      if (!customerResponse.ok) {
-        throw new Error("Error al buscar el cliente por teléfono.");
-      }
-
       const customerData = await customerResponse.json();
+
       if (!customerData.customers || customerData.customers.length === 0) {
-        // No se encontró el cliente, por lo tanto no hay borradores.
         return {
-          content: [
-            {
-              type: "text",
-              text: "No se encontró ningún cliente con ese teléfono.",
-            },
-          ],
+          content: [{ type: "text", text: "No se encontró el cliente." }],
           structuredContent: { draftOrders: [] },
         };
       }
 
+      // ✅ Tomamos el primer cliente encontrado
       const customerId = customerData.customers[0].id;
 
-      // 3. Buscar borradores de pedido 'abiertos' para ese cliente
+      // ✅ 3. Buscar borradores abiertos
       const draftApiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders.json?customer_id=${customerId}&status=open`;
+
       const draftResponse = await fetch(draftApiUrl, {
         method: "GET",
         headers: {
@@ -1805,47 +1795,34 @@ server.registerTool(
         },
       });
 
-      if (!draftResponse.ok) {
-        throw new Error(
-          "Cliente encontrado, pero falló la búsqueda de sus borradores."
-        );
-      }
-
       const draftData = await draftResponse.json();
       const openDrafts = draftData.draft_orders || [];
 
-      // 4. Formatear la salida
       const formattedDrafts = openDrafts.map((d: any) => ({
         id: d.id,
-        name: d.name, // ej. #D301
+        name: d.name,
         totalPrice: d.total_price,
         createdAt: d.created_at,
       }));
 
-      const message =
+      const msg =
         formattedDrafts.length > 0
-          ? `Se encontraron ${
-              formattedDrafts.length
-            } borradores abiertos: ${JSON.stringify(formattedDrafts, null, 2)}`
-          : "El cliente no tiene borradores de pedido abiertos.";
+          ? `Se encontraron ${formattedDrafts.length} borradores abiertos.`
+          : "El cliente no tiene borradores abiertos.";
 
       return {
-        content: [{ type: "text", text: message }],
+        content: [{ type: "text", text: msg }],
         structuredContent: { draftOrders: formattedDrafts },
       };
     } catch (error) {
-      console.error("❌ Error al buscar borradores por teléfono:", error);
-      const result = {
-        message: "❌ Error al buscar los borradores de pedido.",
-        details: error instanceof Error ? error.message : "Error desconocido",
-      };
       return {
-        content: [{ type: "text", text: result.message }],
+        content: [{ type: "text", text: "Error al buscar borradores." }],
         structuredContent: { draftOrders: [] },
       };
     }
   }
 );
+
 // ----------------------------------------------------
 // FIN DE LA HERRAMIENTA 11
 // ----------------------------------------------------
