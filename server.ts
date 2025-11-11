@@ -8,6 +8,11 @@ import { z } from "zod";
 const cache = new Map<string, { data: any; timestamp: number }>();
 const CACHE_TTL = 5 * 60 * 1000;
 
+console.log("ENV CHECK =>", {
+  SHOPIFY_STORE_URL: process.env.SHOPIFY_STORE_URL,
+  SHOPIFY_API_TOKEN: process.env.SHOPIFY_API_TOKEN ? "SET" : "MISSING",
+});
+
 // 1. Crear el servidor MCP
 const server = new McpServer({
   name: "demo-server-railway",
