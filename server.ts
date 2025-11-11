@@ -873,7 +873,7 @@ server.registerTool(
           {
             variant_id: input.variantId,
             quantity: input.quantity,
-            fulfillment_service: "fulfillment-dropi",
+            // fulfillment_service: "fulfillment-dropi",
           },
         ],
         note_attributes: note_attributes,
