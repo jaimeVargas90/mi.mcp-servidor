@@ -1703,14 +1703,11 @@ server.registerTool(
     description:
       "Busca borradores de pedido 'abiertos' de un cliente usando su teléfono o su nombre completo/parcial.",
     inputSchema: {
-      phone: z
-        .string()
-        .optional()
-        .describe("Teléfono/WhatsApp del cliente (300... o +57...)."),
+      phone: z.string().optional().describe("Tel/WhatsApp (300... o +57...)."),
       name: z
         .string()
         .optional()
-        .describe("Nombre o apellido del cliente (ej. 'Juan', 'Pérez')."),
+        .describe("Nombre/apellido (ej. 'Juan', 'Pérez')."),
     },
     outputSchema: {
       draftOrders: z.array(
@@ -1727,7 +1724,6 @@ server.registerTool(
   async ({ phone, name }) => {
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
-
     if (!storeUrl || !apiToken) {
       return {
         content: [{ type: "text", text: "Error: Shopify no configurado." }],
@@ -1735,39 +1731,46 @@ server.registerTool(
       };
     }
 
-    // ✅ Validación: se requiere al menos uno
     if (!phone && !name) {
       return {
         content: [
-          {
-            type: "text",
-            text: "Debes proporcionar al menos 'phone' o 'name'.",
-          },
+          { type: "text", text: "Debes proporcionar 'phone' o 'name'." },
         ],
         structuredContent: { draftOrders: [] },
       };
     }
 
-    // ✅ 1. Construir la query dinámica
-    let query = "";
-
-    if (phone) {
-      let formatted = phone.replace(/[\s\-\(\)]+/g, "");
-      if (formatted.length === 10 && !formatted.startsWith("+")) {
-        formatted = `+57${formatted}`;
-      } else if (!formatted.startsWith("+")) {
-        formatted = `+${formatted}`;
+    // 1) Normalizar teléfono (E.164)
+    let formattedPhone = phone;
+    if (formattedPhone) {
+      formattedPhone = formattedPhone.replace(/[\s\-\(\)]+/g, "");
+      if (formattedPhone.length === 10 && !formattedPhone.startsWith("+")) {
+        formattedPhone = `+57${formattedPhone}`;
+      } else if (!formattedPhone.startsWith("+")) {
+        formattedPhone = `+${formattedPhone}`;
       }
-      query = `phone:${formatted}`;
     }
 
-    if (name) {
-      const cleanName = encodeURIComponent(name.trim());
-      query = query ? `${query} OR name:*${cleanName}*` : `name:*${cleanName}*`;
+    // 2) Armar query en partes (sin codificar aún)
+    const parts: string[] = [];
+    if (formattedPhone) {
+      // ¡OJO! No codifiques aquí: codificaremos la query completa más abajo
+      parts.push(`phone:${formattedPhone}`);
+    }
+    if (name && name.trim()) {
+      const n = name.trim();
+      // Búsqueda combinada: exacta entre comillas y parcial con wildcard
+      // Shopify hace tokenización de name:, pero el wildcard ayuda con parciales
+      // Si el nombre tiene espacios, las comillas ayudan a mantener la frase
+      parts.push(`name:"${n}" OR name:${n}*`);
     }
 
-    // ✅ 2. Buscar el cliente
-    const searchUrl = `https://${storeUrl}/admin/api/2024-04/customers/search.json?query=${query}`;
+    // 3) Construir y CODIFICAR la query completa
+    const rawQuery = parts.join(" OR ");
+    const encodedQuery = encodeURIComponent(rawQuery);
+
+    // 4) Limitar resultados del search de clientes
+    const searchUrl = `https://${storeUrl}/admin/api/2024-04/customers/search.json?query=${encodedQuery}&limit=5`;
 
     try {
       const customerResponse = await fetch(searchUrl, {
@@ -1778,21 +1781,47 @@ server.registerTool(
         },
       });
 
-      const customerData = await customerResponse.json();
-
-      if (!customerData.customers || customerData.customers.length === 0) {
+      // Manejo seguro por si Shopify devuelve HTML
+      const rawText = await customerResponse.text();
+      let customerData: any;
+      try {
+        customerData = JSON.parse(rawText);
+      } catch {
         return {
-          content: [{ type: "text", text: "No se encontró el cliente." }],
+          content: [
+            {
+              type: "text",
+              text: "Respuesta no-JSON de Shopify al buscar clientes.",
+            },
+          ],
           structuredContent: { draftOrders: [] },
         };
       }
 
-      // ✅ Tomamos el primer cliente encontrado
-      const customerId = customerData.customers[0].id;
+      const customers = customerData?.customers ?? [];
+      if (customers.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "No se encontró ningún cliente con ese criterio.",
+            },
+          ],
+          structuredContent: { draftOrders: [] },
+        };
+      }
 
-      // ✅ 3. Buscar borradores abiertos
-      const draftApiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders.json?customer_id=${customerId}&status=open`;
+      // Opción: si hay varios, tomar el que mejor calza por teléfono exacto
+      let customerId = customers[0].id;
+      if (formattedPhone) {
+        const exact = customers.find(
+          (c: any) => (c.phone || "") === formattedPhone
+        );
+        if (exact) customerId = exact.id;
+      }
 
+      // 5) Buscar draft orders abiertos de ese cliente
+      const draftApiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders.json?customer_id=${customerId}&status=open&limit=10`;
       const draftResponse = await fetch(draftApiUrl, {
         method: "GET",
         headers: {
@@ -1801,9 +1830,23 @@ server.registerTool(
         },
       });
 
-      const draftData = await draftResponse.json();
-      const openDrafts = draftData.draft_orders || [];
+      const draftRaw = await draftResponse.text();
+      let draftData: any;
+      try {
+        draftData = JSON.parse(draftRaw);
+      } catch {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Respuesta no-JSON de Shopify al listar borradores.",
+            },
+          ],
+          structuredContent: { draftOrders: [] },
+        };
+      }
 
+      const openDrafts = draftData?.draft_orders ?? [];
       const formattedDrafts = openDrafts.map((d: any) => ({
         id: d.id,
         name: d.name,
@@ -1820,7 +1863,7 @@ server.registerTool(
         content: [{ type: "text", text: msg }],
         structuredContent: { draftOrders: formattedDrafts },
       };
-    } catch (error) {
+    } catch (err) {
       return {
         content: [{ type: "text", text: "Error al buscar borradores." }],
         structuredContent: { draftOrders: [] },
