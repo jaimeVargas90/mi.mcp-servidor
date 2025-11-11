@@ -708,6 +708,61 @@ server.registerTool(
       };
     }
 
+    // --- 1. OBTENER EL HANDLE DEL PRODUCTO (NUEVO BLOQUE) ---
+    // Necesitamos el "handle" para saber qué descuento aplicar.
+    let productHandle: string | null = null;
+    // Construimos el ID de GraphQL a partir del ID numérico
+    const variantGid = `gid://shopify/ProductVariant/${input.variantId}`;
+
+    const gqlQuery = `
+      query getProductHandle($variantId: ID!) {
+        node(id: $variantId) {
+          ... on ProductVariant {
+            product {
+              handle
+            }
+          }
+        }
+      }
+    `;
+
+    try {
+      const graphqlApiUrl = `https://${storeUrl}/admin/api/2024-04/graphql.json`;
+      const response = await fetch(graphqlApiUrl, {
+        method: "POST",
+        headers: {
+          "X-Shopify-Access-Token": apiToken,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query: gqlQuery,
+          variables: { variantId: variantGid },
+        }),
+      });
+
+      if (!response.ok) {
+        console.warn(
+          `Error de GraphQL al obtener el handle: ${response.statusText}`
+        );
+      } else {
+        const data = await response.json();
+        if (data.data?.node?.product?.handle) {
+          productHandle = data.data.node.product.handle;
+          console.log(`Handle del producto obtenido: ${productHandle}`);
+        } else {
+          // Esto puede pasar si el variantId es incorrecto
+          console.warn(
+            "No se pudo encontrar el handle para la variantId:",
+            variantGid
+          );
+        }
+      }
+    } catch (error) {
+      console.error("Error al llamar a GraphQL para obtener el handle:", error);
+      // No detenemos el pedido, pero no habrá descuento
+    }
+    // --- FIN DE OBTENER HANDLE ---
+
     // Mapeo de note_attributes
     const note_attributes = [
       { name: "Nombre(s) y Apellido", value: input.name! },
@@ -773,10 +828,47 @@ server.registerTool(
       };
     }
 
+    // --- NUEVA LÓGICA DE DESCUENTO (REEMPLAZO) ---
+    let discountPayload: any[] = [];
+    let discountCode: string | null = null;
+    const quantity = input.quantity;
+
+    const INTIMPRO_HANDLE = "intimpro-jabon-masculino";
+    const EVENTONE_HANDLE = "eventone-jabon";
+
+    if (productHandle === INTIMPRO_HANDLE) {
+      if (quantity === 2) {
+        discountCode = "48MIL";
+      } else if (quantity === 3) {
+        discountCode = "97MIL";
+      }
+      // Si la cantidad es 1, discountCode sigue siendo null (sin descuento)
+    } else if (productHandle === EVENTONE_HANDLE) {
+      if (quantity === 2) {
+        discountCode = "48MIL";
+      } else if (quantity === 3) {
+        discountCode = "107MIL";
+      }
+      // Si la cantidad es 1, discountCode sigue siendo null (sin descuento)
+    }
+
+    if (discountCode) {
+      console.log(
+        `Condición de descuento cumplida (Producto: ${productHandle}, Cantidad: ${quantity}). Aplicando código: ${discountCode}`
+      );
+      discountPayload = [{ code: discountCode }];
+    } else {
+      console.log(
+        `Sin descuento aplicable (Producto: ${productHandle}, Cantidad: ${quantity}).`
+      );
+    }
+    // --- FIN NUEVA LÓGICA DE DESCUENTO ---
+
     // Construir el payload del nuevo pedido
     const payload = {
       order: {
         financial_status: "pending",
+        discount_codes: discountPayload,
         line_items: [
           {
             variant_id: input.variantId,
