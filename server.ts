@@ -1723,7 +1723,7 @@ server.registerTool(
 // ----------------------------------------------------
 
 /// ----------------------------------------------------
-// NUEVA HERRAMIENTA 11: BUSCAR BORRADORES POR ID DE CLIENTE
+// NUEVA HERRAMIENTA 12: BUSCAR BORRADORES POR ID DE CLIENTE
 // ----------------------------------------------------
 server.registerTool(
   "findDraftsByCustomerId",
@@ -1740,12 +1740,10 @@ server.registerTool(
       limit: z
         .number()
         .optional()
-        .default(25)
+        .default(250) // <--- CORRECCIÓN 1: Límite por defecto
         .describe("Límite de borradores a devolver para este cliente."),
     },
     outputSchema: {
-      // Devolvemos la lista completa. El IA puede contarlos (length)
-      // y extraer los IDs (map)
       draftOrders: z.array(
         z.object({
           id: z.string(),
@@ -1760,7 +1758,8 @@ server.registerTool(
     },
   },
 
-  async ({ customerId, limit = 25 }) => {
+  async ({ customerId, limit = 250 }) => {
+    // <--- CORRECCIÓN 1: Límite por defecto
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
 
@@ -1771,13 +1770,12 @@ server.registerTool(
       };
     }
 
-    // Usamos el mismo patrón de consulta con variables que la Herramienta 2
     const gqlQuery = `
       query findDraftsByCustomer($limit: Int!, $query: String!) {
         draftOrders(
           first: $limit,
           query: $query,
-          sortKey: CREATED_AT,
+          sortKey: ID,       // <--- CORRECCIÓN 2: Usar ID en lugar de CREATED_AT
           reverse: true
         ) {
           edges {
@@ -1807,7 +1805,6 @@ server.registerTool(
             query: gqlQuery,
             variables: {
               limit: limit,
-              // Esta es la parte clave: construimos la consulta
               query: `customer_id:${customerId}`,
             },
           }),
@@ -1817,7 +1814,11 @@ server.registerTool(
       const data = await response.json();
 
       if (data.errors) {
-        console.error("❌ Error GraphQL:", data.errors);
+        // Este log ahora será más detallado si vuelve a fallar
+        console.error(
+          "❌ Error GraphQL:",
+          JSON.stringify(data.errors, null, 2)
+        );
         return {
           content: [
             { type: "text", text: "Error al consultar borradores (GraphQL)." },
@@ -1862,7 +1863,7 @@ server.registerTool(
   }
 );
 // ----------------------------------------------------
-// FIN DE LA HERRAMIENTA 11
+// FIN DE LA HERRAMIENTA 12
 // ----------------------------------------------------
 
 // ----------------------------------------------------
