@@ -1723,40 +1723,51 @@ server.registerTool(
 // ----------------------------------------------------
 
 // --------------------------------------------------------------
-// HERRAMIENTA: Buscar borradores por ID de cliente, teléfono o nombre
+// HERRAMIENTA: Buscar borradores de pedido (GraphQL version)
 // --------------------------------------------------------------
 server.registerTool(
   "findDraftOrders",
   {
-    title: "Buscar borradores de pedido (por ID, teléfono o nombre)",
+    title: "Buscar borradores por cliente o ID (GraphQL)",
     description:
-      "Busca borradores de pedido abiertos de un cliente usando su ID, teléfono o nombre.",
+      "Busca pedidos borradores usando el ID, email, teléfono o nombre del cliente directamente desde Shopify GraphQL Admin API.",
     inputSchema: {
       customerId: z
-        .number()
+        .string()
         .optional()
-        .describe("ID numérico del cliente en Shopify."),
+        .describe("ID del cliente en Shopify (numérico o GraphQL GID)."),
+      email: z
+        .string()
+        .optional()
+        .describe("Email del cliente registrado en el borrador."),
       phone: z
         .string()
         .optional()
-        .describe("Teléfono o WhatsApp del cliente (300... o +57...)."),
+        .describe("Teléfono del cliente, con o sin +57."),
       name: z.string().optional().describe("Nombre o apellido del cliente."),
+      status: z
+        .string()
+        .optional()
+        .describe(
+          "Estado del borrador (open, invoice_sent, completed). Por defecto: open."
+        ),
     },
     outputSchema: {
       draftOrders: z.array(
         z.object({
-          id: z.number(),
+          id: z.string(),
           name: z.string(),
           totalPrice: z.string(),
           createdAt: z.string(),
           customerName: z.string().optional(),
+          email: z.string().optional(),
           phone: z.string().optional(),
         })
       ),
     },
   },
 
-  async ({ customerId, phone, name }) => {
+  async ({ customerId, email, phone, name, status = "open" }) => {
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
 
@@ -1769,161 +1780,109 @@ server.registerTool(
       };
     }
 
-    // 🧩 1. Si tenemos el customerId, usamos directamente ese endpoint (más preciso)
-    if (customerId) {
-      try {
-        const draftApiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders.json?customer_id=${customerId}&status=open&limit=20`;
-        const draftResponse = await fetch(draftApiUrl, {
-          method: "GET",
-          headers: {
-            "X-Shopify-Access-Token": apiToken,
-            "Content-Type": "application/json",
-          },
-        });
+    // 🧩 1. Construir el query dinámico
+    const filters: string[] = [`status:${status}`];
 
-        const data = await draftResponse.json();
-        const drafts = data?.draft_orders ?? [];
+    if (customerId) filters.push(`customer_id:${customerId}`);
+    if (email) filters.push(`customer_email:${email}`);
+    if (phone) {
+      let formattedPhone = phone.replace(/[\s\-\(\)]+/g, "");
+      if (formattedPhone.length === 10 && !formattedPhone.startsWith("+")) {
+        formattedPhone = `+57${formattedPhone}`;
+      }
+      filters.push(`phone:${formattedPhone}`);
+    }
+    if (name) filters.push(`name:${name}`);
 
-        if (drafts.length === 0) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: "⚠️ No se encontraron borradores abiertos para este cliente.",
-              },
-            ],
-            structuredContent: { draftOrders: [] },
-          };
+    const gqlQuery = `
+      {
+        draftOrders(first: 20, query: "${filters.join(" ")}") {
+          nodes {
+            id
+            name
+            totalPrice
+            createdAt
+            status
+            customer {
+              id
+              firstName
+              lastName
+              email
+            }
+            shippingAddress {
+              phone
+            }
+          }
         }
+      }
+    `;
 
-        const formatted = drafts.map((d: any) => ({
-          id: d.id,
-          name: d.name,
-          totalPrice: d.total_price,
-          createdAt: d.created_at,
-          customerName: `${d.customer?.first_name || ""} ${
-            d.customer?.last_name || ""
-          }`.trim(),
-          phone: d.shipping_address?.phone || d.customer?.phone || "",
-        }));
+    // 🧩 2. Llamar a Shopify GraphQL API
+    const graphqlUrl = `https://${storeUrl}/admin/api/2024-04/graphql.json`;
 
+    try {
+      const response = await fetch(graphqlUrl, {
+        method: "POST",
+        headers: {
+          "X-Shopify-Access-Token": apiToken,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ query: gqlQuery }),
+      });
+
+      const result = await response.json();
+
+      if (result.errors) {
+        console.error("GraphQL errors:", result.errors);
         return {
           content: [
-            {
-              type: "text",
-              text: `✅ Se encontraron ${formatted.length} borradores abiertos para el cliente #${customerId}.`,
-            },
-          ],
-          structuredContent: { draftOrders: formatted },
-        };
-      } catch (err) {
-        console.error("Error buscando borradores por customer_id:", err);
-        return {
-          content: [
-            { type: "text", text: "❌ Error al consultar borradores por ID." },
+            { type: "text", text: "❌ Error al ejecutar query GraphQL." },
           ],
           structuredContent: { draftOrders: [] },
         };
       }
-    }
 
-    // 🧩 2. Si no hay customerId, intentamos búsqueda por teléfono o nombre
-    if (!phone && !name) {
+      const nodes = result.data?.draftOrders?.nodes ?? [];
+
+      if (nodes.length === 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "⚠️ No se encontraron borradores con ese criterio.",
+            },
+          ],
+          structuredContent: { draftOrders: [] },
+        };
+      }
+
+      const formatted = nodes.map((d: any) => ({
+        id: d.id.replace("gid://shopify/DraftOrder/", ""),
+        name: d.name,
+        totalPrice: d.totalPrice,
+        createdAt: d.createdAt,
+        customerName: `${d.customer?.firstName || ""} ${
+          d.customer?.lastName || ""
+        }`.trim(),
+        email: d.customer?.email || "",
+        phone: d.shippingAddress?.phone || "",
+      }));
+
       return {
         content: [
           {
             type: "text",
-            text: "⚠️ Debes enviar al menos 'customerId', 'phone' o 'name'.",
+            text: `✅ Se encontraron ${formatted.length} borradores (${status}) para el cliente.`,
           },
         ],
-        structuredContent: { draftOrders: [] },
-      };
-    }
-
-    // 🔹 Normalizar teléfono
-    let formattedPhone = phone;
-    if (formattedPhone) {
-      formattedPhone = formattedPhone.replace(/[\s\-\(\)]+/g, "");
-      if (formattedPhone.length === 10 && !formattedPhone.startsWith("+")) {
-        formattedPhone = `+57${formattedPhone}`;
-      } else if (!formattedPhone.startsWith("+")) {
-        formattedPhone = `+${formattedPhone}`;
-      }
-    }
-
-    try {
-      // Buscar clientes por teléfono o nombre para obtener su ID
-      const queryParts: string[] = [];
-      if (formattedPhone) queryParts.push(`phone:${formattedPhone}`);
-      if (name && name.trim()) {
-        const cleanName = name.trim();
-        queryParts.push(`name:"${cleanName}" OR name:${cleanName}*`);
-      }
-
-      const query = encodeURIComponent(queryParts.join(" OR "));
-      const searchUrl = `https://${storeUrl}/admin/api/2024-04/customers/search.json?query=${query}&limit=5`;
-
-      const customerRes = await fetch(searchUrl, {
-        method: "GET",
-        headers: {
-          "X-Shopify-Access-Token": apiToken,
-          "Content-Type": "application/json",
-        },
-      });
-
-      const customersData = await customerRes.json();
-      const customers = customersData?.customers ?? [];
-
-      if (customers.length === 0) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: "⚠️ No se encontró ningún cliente con ese criterio.",
-            },
-          ],
-          structuredContent: { draftOrders: [] },
-        };
-      }
-
-      // Buscar borradores para el primer cliente coincidente
-      const foundCustomerId = customers[0].id;
-      const draftApiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders.json?customer_id=${foundCustomerId}&status=open&limit=20`;
-      const draftRes = await fetch(draftApiUrl, {
-        method: "GET",
-        headers: {
-          "X-Shopify-Access-Token": apiToken,
-          "Content-Type": "application/json",
-        },
-      });
-
-      const draftData = await draftRes.json();
-      const drafts = draftData?.draft_orders ?? [];
-
-      const formatted = drafts.map((d: any) => ({
-        id: d.id,
-        name: d.name,
-        totalPrice: d.total_price,
-        createdAt: d.created_at,
-        customerName: `${d.customer?.first_name || ""} ${
-          d.customer?.last_name || ""
-        }`.trim(),
-        phone: d.shipping_address?.phone || d.customer?.phone || "",
-      }));
-
-      const msg =
-        formatted.length > 0
-          ? `✅ Se encontraron ${formatted.length} borradores para el cliente "${customers[0].first_name} ${customers[0].last_name}".`
-          : "⚠️ El cliente no tiene borradores abiertos.";
-
-      return {
-        content: [{ type: "text", text: msg }],
         structuredContent: { draftOrders: formatted },
       };
     } catch (error) {
-      console.error("Error al buscar borradores:", error);
+      console.error("Error GraphQL Shopify:", error);
       return {
-        content: [{ type: "text", text: "❌ Error al consultar borradores." }],
+        content: [
+          { type: "text", text: "❌ Error al conectar con Shopify GraphQL." },
+        ],
         structuredContent: { draftOrders: [] },
       };
     }
