@@ -1795,6 +1795,15 @@ server.registerTool(
       };
     }
 
+    // 🔹 Ordenar por fecha descendente
+    const sorted = allDrafts.sort(
+      (a: any, b: any) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+
+    // 🔹 Tomar solo los más recientes según el limit
+    const recentDrafts = sorted.slice(0, limit);
+
     // 2️⃣ Filtrar localmente
     let filtered = allDrafts;
 
