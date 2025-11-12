@@ -1723,37 +1723,43 @@ server.registerTool(
 // ----------------------------------------------------
 
 // --------------------------------------------------------------
-// HERRAMIENTA 11: Buscar borradores recientes y filtrar localmente
+// HERRAMIENTA 11: Buscar borradores recientes con GraphQL + Filtro + ID limpio
 // --------------------------------------------------------------
 server.registerTool(
   "findDraftOrders",
   {
-    title: "Buscar borradores recientes (filtro local)",
+    title: "Listar borradores recientes (GraphQL ordenado)",
     description:
-      "Trae los últimos borradores (por defecto 50) y filtra localmente por nombre, teléfono o ID del cliente si es posible.",
+      "Obtiene los borradores más recientes de Shopify (ordenados de más nuevo a más viejo) y permite filtrar por texto en el contenido.",
     inputSchema: {
-      phone: z.string().optional().describe("Teléfono o WhatsApp del cliente."),
-      name: z.string().optional().describe("Nombre o parte del nombre."),
       limit: z
         .number()
         .optional()
-        .describe("Cantidad máxima de borradores a traer (por defecto 50)."),
+        .describe(
+          "Cantidad máxima de borradores a devolver (por defecto 50, máximo 250)."
+        ),
+      search: z
+        .string()
+        .optional()
+        .describe(
+          "Texto para filtrar (por ejemplo nombre, teléfono, nota, etc.)."
+        ),
     },
     outputSchema: {
       draftOrders: z.array(
         z.object({
-          id: z.number(),
+          id: z.string(),
+          numericId: z.number(),
           name: z.string(),
-          totalPrice: z.string(),
           createdAt: z.string(),
-          noteAttributes: z.array(z.any()).optional(),
-          tags: z.string().optional(),
+          totalPrice: z.string(),
+          status: z.string(),
         })
       ),
     },
   },
 
-  async ({ phone, name, limit = 50 }) => {
+  async ({ limit = 50, search }) => {
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
 
@@ -1764,82 +1770,79 @@ server.registerTool(
       };
     }
 
-    // 1️⃣ Llamar a la API de borradores
-    const apiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders.json?status=open&limit=${limit}`;
-    const response = await fetch(apiUrl, {
-      method: "GET",
-      headers: {
-        "X-Shopify-Access-Token": apiToken,
-        "Content-Type": "application/json",
-      },
-    });
+    // --- QUERY GRAPHQL ---
+    const gqlQuery = `
+      {
+        draftOrders(first: ${limit}, sortKey: CREATED_AT, reverse: true) {
+          nodes {
+            id
+            name
+            createdAt
+            status
+            totalPrice
+            noteAttributes {
+              name
+              value
+            }
+            tags
+          }
+        }
+      }
+    `;
 
-    const text = await response.text();
-    let data: any;
     try {
-      data = JSON.parse(text);
-    } catch {
+      const response = await fetch(
+        `https://${storeUrl}/admin/api/2024-04/graphql.json`,
+        {
+          method: "POST",
+          headers: {
+            "X-Shopify-Access-Token": apiToken,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ query: gqlQuery }),
+        }
+      );
+
+      const data = await response.json();
+      const draftOrders = data.data?.draftOrders?.nodes ?? [];
+
+      // 🔹 Filtrado local por texto si se especifica "search"
+      let filtered = draftOrders;
+      if (search) {
+        const query = search.toLowerCase();
+        filtered = draftOrders.filter((d: any) =>
+          JSON.stringify(d).toLowerCase().includes(query)
+        );
+      }
+
+      // 🔹 Formatear salida (extraer ID numérico)
+      const formatted = filtered.map((d: any) => ({
+        id: d.id,
+        numericId: Number(d.id.split("/").pop()), // 👉 convierte "gid://shopify/DraftOrder/12345" → 12345
+        name: d.name,
+        createdAt: d.createdAt,
+        status: d.status,
+        totalPrice: d.totalPrice,
+      }));
+
+      const msg =
+        formatted.length > 0
+          ? `✅ Se encontraron ${formatted.length} borradores.`
+          : "⚠️ No se encontraron borradores que coincidan con la búsqueda.";
+
+      return {
+        content: [{ type: "text", text: msg }],
+        structuredContent: { draftOrders: formatted },
+      };
+    } catch (err) {
+      console.error("❌ Error al consultar Shopify GraphQL:", err);
       return {
         content: [
-          { type: "text", text: "⚠️ Error al parsear respuesta de Shopify." },
+          { type: "text", text: "❌ Error al obtener borradores (GraphQL)." },
         ],
         structuredContent: { draftOrders: [] },
       };
     }
-
-    const allDrafts = data?.draft_orders ?? [];
-    if (allDrafts.length === 0) {
-      return {
-        content: [{ type: "text", text: "⚠️ No hay borradores recientes." }],
-        structuredContent: { draftOrders: [] },
-      };
-    }
-
-    // 🔹 Ordenar por fecha descendente
-    const sorted = allDrafts.sort(
-      (a: any, b: any) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    );
-
-    // 🔹 Tomar solo los más recientes según el limit
-    const recentDrafts = sorted.slice(0, limit);
-
-    // 2️⃣ Filtrar localmente
-    let filtered = allDrafts;
-
-    if (phone) {
-      const cleanPhone = phone.replace(/[\s\-\(\)]+/g, "");
-      filtered = filtered.filter((d: any) =>
-        JSON.stringify(d).toLowerCase().includes(cleanPhone.toLowerCase())
-      );
-    }
-
-    if (name) {
-      const lowerName = name.toLowerCase();
-      filtered = filtered.filter((d: any) =>
-        JSON.stringify(d).toLowerCase().includes(lowerName)
-      );
-    }
-
-    // 3️⃣ Formatear resultados
-    const formatted = filtered.map((d: any) => ({
-      id: d.id,
-      name: d.name,
-      totalPrice: d.total_price,
-      createdAt: d.created_at,
-      noteAttributes: d.note_attributes,
-      tags: d.tags,
-    }));
-
-    const msg =
-      formatted.length > 0
-        ? `✅ Se encontraron ${formatted.length} borradores que coinciden con el filtro.`
-        : `⚠️ No se encontraron coincidencias entre los últimos ${limit} borradores.`;
-
-    return {
-      content: [{ type: "text", text: msg }],
-      structuredContent: { draftOrders: formatted },
-    };
   }
 );
 
