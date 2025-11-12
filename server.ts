@@ -1722,30 +1722,30 @@ server.registerTool(
 // FIN DE LA HERRAMIENTA 10
 // ----------------------------------------------------
 
-// --------------------------------------------------------------
-// HERRAMIENTA: Buscar borradores recientes desde un ID base
-// --------------------------------------------------------------
+/// ----------------------------------------------------
+// NUEVA HERRAMIENTA 11: BUSCAR BORRADORES POR ID DE CLIENTE
+// ----------------------------------------------------
 server.registerTool(
-  "findDraftOrders",
+  "findDraftsByCustomerId",
   {
-    title: "Listar borradores recientes desde un ID base",
+    title: "Buscar Borradores por ID de Cliente",
     description:
-      "Obtiene los borradores de pedido más recientes desde un ID específico, usando la API GraphQL de Shopify. Permite limitar la cantidad de resultados y ver sus IDs.",
+      "Busca todos los borradores de pedido (borradores) asociados a un ID de cliente específico.",
     inputSchema: {
+      customerId: z
+        .string()
+        .describe(
+          "El ID numérico del cliente (ej. '6789012345'). NO usar el GID."
+        ),
       limit: z
         .number()
         .optional()
-        .describe(
-          "Cantidad máxima de borradores (por defecto 50, máximo 250)."
-        ),
-      sinceId: z
-        .string()
-        .optional()
-        .describe(
-          "ID del último borrador conocido (ej. 1016781471780). Si se envía, traerá solo los creados después de ese ID."
-        ),
+        .default(25)
+        .describe("Límite de borradores a devolver para este cliente."),
     },
     outputSchema: {
+      // Devolvemos la lista completa. El IA puede contarlos (length)
+      // y extraer los IDs (map)
       draftOrders: z.array(
         z.object({
           id: z.string(),
@@ -1760,7 +1760,7 @@ server.registerTool(
     },
   },
 
-  async ({ limit = 50, sinceId }) => {
+  async ({ customerId, limit = 25 }) => {
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
 
@@ -1771,16 +1771,16 @@ server.registerTool(
       };
     }
 
-    // --- QUERY corregido ---
+    // Usamos el mismo patrón de consulta con variables que la Herramienta 2
     const gqlQuery = `
-      {
+      query findDraftsByCustomer($limit: Int!, $query: String!) {
         draftOrders(
-          first: ${limit},
-          sortKey: UPDATED_AT,
+          first: $limit,
+          query: $query,
+          sortKey: CREATED_AT,
           reverse: true
         ) {
           edges {
-            cursor
             node {
               id
               name
@@ -1803,7 +1803,14 @@ server.registerTool(
             "X-Shopify-Access-Token": apiToken,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ query: gqlQuery }),
+          body: JSON.stringify({
+            query: gqlQuery,
+            variables: {
+              limit: limit,
+              // Esta es la parte clave: construimos la consulta
+              query: `customer_id:${customerId}`,
+            },
+          }),
         }
       );
 
@@ -1820,16 +1827,7 @@ server.registerTool(
       }
 
       const edges = data.data?.draftOrders?.edges ?? [];
-      let draftOrders = edges.map((e: any) => e.node);
-
-      // 🔹 Si se pasó sinceId, filtrar por ID numérico
-      if (sinceId) {
-        const numericSince = Number(sinceId);
-        draftOrders = draftOrders.filter((d: any) => {
-          const numId = Number(d.id.split("/").pop());
-          return numId > numericSince;
-        });
-      }
+      const draftOrders = edges.map((e: any) => e.node);
 
       // 🔹 Formatear salida
       const formatted = draftOrders.map((d: any) => ({
@@ -1842,12 +1840,11 @@ server.registerTool(
         totalPrice: d.totalPrice,
       }));
 
+      const count = formatted.length;
       const msg =
-        formatted.length > 0
-          ? `✅ Se encontraron ${formatted.length} borradores recientes.`
-          : sinceId
-          ? `⚠️ No hay borradores más nuevos que el ID ${sinceId}.`
-          : "⚠️ No se encontraron borradores.";
+        count > 0
+          ? `✅ Se encontraron ${count} borradores para el cliente ${customerId}.`
+          : `⚠️ No se encontraron borradores para el cliente ${customerId}.`;
 
       return {
         content: [{ type: "text", text: msg }],
@@ -1864,7 +1861,6 @@ server.registerTool(
     }
   }
 );
-
 // ----------------------------------------------------
 // FIN DE LA HERRAMIENTA 11
 // ----------------------------------------------------
