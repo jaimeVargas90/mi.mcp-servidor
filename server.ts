@@ -616,20 +616,36 @@ server.registerTool(
 // ----------------------------------------------------
 // HERRAMIENTA 5: CREAR PEDIDO (REST API)
 // ----------------------------------------------------
+
 server.registerTool(
   "createOrder",
   {
-    title: "Crear Pedido Shopify (REST)",
+    title:
+      "Crear Pedido Shopify (precio final o total con limpieza automática)",
     description:
-      'Crea un nuevo pedido en Shopify con estado de pago "pendiente" (ideal para contra entrega). Requiere el ID de variante del producto y los datos del cliente.',
+      'Crea un pedido en Shopify con estado "pendiente" (pago contra entrega). Puedes enviar el precio unitario (finalPrice) o el precio total del pedido (totalPrice). Si el total incluye símbolos ($, puntos o comas), el servidor lo limpia automáticamente y calcula el unitario.',
     inputSchema: {
       variantId: z
         .number()
-        .describe("El ID numérico de la VARIANTE del producto (ej. 44...21)."),
+        .describe(
+          "El ID numérico de la VARIANTE del producto (ej. 44135791866205)."
+        ),
       quantity: z
         .number()
         .default(1)
         .describe("Cantidad de unidades del producto."),
+      finalPrice: z
+        .union([z.number(), z.string()])
+        .optional()
+        .describe(
+          "Precio unitario con descuento aplicado (se limpiará si incluye símbolos)."
+        ),
+      totalPrice: z
+        .union([z.number(), z.string()])
+        .optional()
+        .describe(
+          "Precio total del pedido (se limpiará y se divide automáticamente entre la cantidad)."
+        ),
       name: z.string().optional().describe("Nombre(s) y Apellido del cliente."),
       phone: z
         .string()
@@ -638,22 +654,23 @@ server.registerTool(
       address1: z
         .string()
         .optional()
-        .describe("Dirección principal (ej. 'Calle 20 #30-60')."),
+        .describe("Dirección principal del cliente."),
       address2: z
         .string()
         .optional()
-        .describe("Datos adicionales de la dirección (ej. 'Apartamento 201')."),
+        .describe("Datos adicionales (ej. 'Apartamento 201')."),
       city: z.string().optional().describe("Ciudad del cliente."),
-      province: z
-        .string()
-        .optional()
-        .describe("Provincia/Departamento del cliente."),
+      province: z.string().optional().describe("Departamento del cliente."),
       country: z
         .string()
         .optional()
         .default("Colombia")
         .describe("País del cliente."),
       zip: z.string().optional().describe("Código postal."),
+      discountLabel: z
+        .string()
+        .optional()
+        .describe("Etiqueta informativa del descuento (opcional)."),
     },
     outputSchema: {
       message: z.string(),
@@ -665,29 +682,55 @@ server.registerTool(
   async (input) => {
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
+
     if (!storeUrl || !apiToken) {
-      console.error("Error: Las variables de Shopify no están configuradas.");
-      const result = {
-        message: "Error: El servidor no está configurado para Shopify.",
-      };
+      const msg = "Error: Variables de entorno de Shopify no configuradas.";
+      console.error(msg);
       return {
-        content: [{ type: "text", text: result.message }],
-        structuredContent: result,
+        content: [{ type: "text", text: msg }],
+        structuredContent: { message: msg },
       };
     }
 
+    // 🔹 Función para limpiar valores numéricos tipo "$99.000", "99,000", "99 000"
+    const cleanNumber = (value: any): number | null => {
+      if (value === undefined || value === null) return null;
+      if (typeof value === "number") return value;
+      const cleaned = value.toString().replace(/[^\d]/g, ""); // elimina $, ., , y espacios
+      return cleaned ? parseFloat(cleaned) : null;
+    };
+
+    // 🔹 Limpiar precios
+    const cleanedTotal = cleanNumber(input.totalPrice);
+    const cleanedFinal = cleanNumber(input.finalPrice);
+
+    // 🔹 Calcular precio unitario final
+    const finalPrice =
+      cleanedTotal && input.quantity
+        ? cleanedTotal / input.quantity
+        : cleanedFinal;
+
+    if (!finalPrice) {
+      const msg =
+        "❌ Debes enviar 'finalPrice' o 'totalPrice' válidos para crear el pedido.";
+      return {
+        content: [{ type: "text", text: msg }],
+        structuredContent: { message: msg },
+      };
+    }
+
+    // 🔹 Formatear teléfono
     let formattedPhone = input.phone;
     if (formattedPhone) {
       formattedPhone = formattedPhone.replace(/[\s\-\(\)]+/g, "");
       if (formattedPhone.length === 10 && !formattedPhone.startsWith("+")) {
         formattedPhone = `+57${formattedPhone}`;
       } else if (!formattedPhone.startsWith("+")) {
-        // Asegurarse de que tenga el + si no es el caso de 10 dígitos
         formattedPhone = `+${formattedPhone}`;
       }
     }
 
-    // Validación de datos
+    // 🔹 Validar datos mínimos
     if (
       !input.name ||
       !formattedPhone ||
@@ -696,9 +739,9 @@ server.registerTool(
       !input.province
     ) {
       const result = {
-        message: "❌ Error: Faltan datos del cliente.",
+        message: "❌ Faltan datos del cliente.",
         details:
-          "Para crear el pedido, necesito que me pidas el nombre, teléfono, dirección, ciudad y departamento del cliente.",
+          "Se requiere nombre, teléfono, dirección, ciudad y departamento.",
       };
       return {
         content: [
@@ -708,77 +751,11 @@ server.registerTool(
       };
     }
 
-    // --- 1. OBTENER EL HANDLE DEL PRODUCTO (NUEVO BLOQUE) ---
-    // Necesitamos el "handle" para saber qué descuento aplicar.
-    let productHandle: string | null = null;
-    // Construimos el ID de GraphQL a partir del ID numérico
-    const variantGid = `gid://shopify/ProductVariant/${input.variantId}`;
-
-    const gqlQuery = `
-      query getProductHandle($variantId: ID!) {
-        node(id: $variantId) {
-          ... on ProductVariant {
-            product {
-              handle
-            }
-          }
-        }
-      }
-    `;
-
-    try {
-      const graphqlApiUrl = `https://${storeUrl}/admin/api/2024-04/graphql.json`;
-      const response = await fetch(graphqlApiUrl, {
-        method: "POST",
-        headers: {
-          "X-Shopify-Access-Token": apiToken,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          query: gqlQuery,
-          variables: { variantId: variantGid },
-        }),
-      });
-
-      if (!response.ok) {
-        console.warn(
-          `Error de GraphQL al obtener el handle: ${response.statusText}`
-        );
-      } else {
-        const data = await response.json();
-        if (data.data?.node?.product?.handle) {
-          productHandle = data.data.node.product.handle;
-          console.log(`Handle del producto obtenido: ${productHandle}`);
-        } else {
-          // Esto puede pasar si el variantId es incorrecto
-          console.warn(
-            "No se pudo encontrar el handle para la variantId:",
-            variantGid
-          );
-        }
-      }
-    } catch (error) {
-      console.error("Error al llamar a GraphQL para obtener el handle:", error);
-      // No detenemos el pedido, pero no habrá descuento
-    }
-    // --- FIN DE OBTENER HANDLE ---
-
-    // Mapeo de note_attributes
-    const note_attributes = [
-      { name: "Nombre(s) y Apellido", value: input.name! },
-      { name: "WhatsApp", value: formattedPhone! },
-      { name: "Ingresa tu dirección completa", value: input.address1! },
-      { name: "Datos adicionales", value: input.address2 || "" },
-      { name: "Ciudad", value: input.city! },
-      { name: "Departamento", value: input.province! },
-      { name: "País", value: input.country || "Colombia" },
-    ];
-
-    const firstName = input.name!.split(" ")[0];
-    const lastName = input.name!.split(" ").slice(1).join(" ") || firstName;
-
-    // 1. Buscar al cliente por número de teléfono
+    // 🔹 Buscar o crear cliente
+    const firstName = input.name.split(" ")[0];
+    const lastName = input.name.split(" ").slice(1).join(" ") || firstName;
     let customerPayload: any;
+
     try {
       const searchUrl = `https://${storeUrl}/admin/api/2024-04/customers/search.json?query=phone:${encodeURIComponent(
         formattedPhone
@@ -792,104 +769,66 @@ server.registerTool(
       });
 
       if (customerResponse.ok) {
-        const customerData = await customerResponse.json();
-        if (customerData.customers && customerData.customers.length > 0) {
-          // Cliente ENCONTRADO: Usar su ID
-          const customerId = customerData.customers[0].id;
-          console.log(`Cliente encontrado con ID: ${customerId}. Asociando...`);
-          customerPayload = { id: customerId };
-        } else {
-          // Cliente NO ENCONTRADO: Crear uno nuevo
-          console.log("Cliente no encontrado. Creando uno nuevo...");
-          customerPayload = {
-            first_name: firstName,
-            last_name: lastName,
-            phone: formattedPhone!,
-          };
-        }
+        const data = await customerResponse.json();
+        customerPayload =
+          data.customers?.length > 0
+            ? { id: data.customers[0].id }
+            : {
+                first_name: firstName,
+                last_name: lastName,
+                phone: formattedPhone,
+              };
       } else {
-        // Si la búsqueda falla, intentamos crear uno nuevo (comportamiento anterior)
-        console.warn(
-          "Búsqueda de cliente falló. Intentando crear uno nuevo..."
-        );
-        customerPayload = {
-          first_name: firstName,
-          last_name: lastName,
-          phone: formattedPhone!,
-        };
+        throw new Error("Error buscando cliente.");
       }
-    } catch (error) {
-      console.error("Error buscando cliente, se intentará crear:", error);
-      // Si hay un error de red, intentamos crear uno nuevo
+    } catch {
       customerPayload = {
         first_name: firstName,
         last_name: lastName,
-        phone: formattedPhone!,
+        phone: formattedPhone,
       };
     }
 
-    // --- NUEVA LÓGICA DE DESCUENTO (REEMPLAZO) ---
-    let discountPayload: any[] = [];
-    let discountCode: string | null = null;
-    const quantity = input.quantity;
-
-    const INTIMPRO_HANDLE = "intimpro-jabon-masculino";
-    const EVENTONE_HANDLE = "eventone-jabon";
-
-    if (productHandle === INTIMPRO_HANDLE) {
-      if (quantity === 2) {
-        discountCode = "48MIL";
-      } else if (quantity === 3) {
-        discountCode = "97MIL";
-      }
-      // Si la cantidad es 1, discountCode sigue siendo null (sin descuento)
-    } else if (productHandle === EVENTONE_HANDLE) {
-      if (quantity === 2) {
-        discountCode = "48MIL";
-      } else if (quantity === 3) {
-        discountCode = "107MIL";
-      }
-      // Si la cantidad es 1, discountCode sigue siendo null (sin descuento)
-    }
-
-    if (discountCode) {
-      console.log(
-        `Condición de descuento cumplida (Producto: ${productHandle}, Cantidad: ${quantity}). Aplicando código: ${discountCode}`
-      );
-      discountPayload = [{ code: discountCode }];
-    } else {
-      console.log(
-        `Sin descuento aplicable (Producto: ${productHandle}, Cantidad: ${quantity}).`
-      );
-    }
-    // --- FIN NUEVA LÓGICA DE DESCUENTO ---
-
-    // Construir el payload del nuevo pedido
+    // 🔹 Crear pedido
     const payload = {
       order: {
         financial_status: "pending",
-        discount_codes: discountPayload,
         line_items: [
           {
             variant_id: input.variantId,
             quantity: input.quantity,
-            // fulfillment_service: "fulfillment-dropi",
+            price: finalPrice,
           },
         ],
-        note_attributes: note_attributes,
+        note_attributes: [
+          { name: "Nombre y Apellido", value: input.name },
+          { name: "WhatsApp", value: formattedPhone },
+          { name: "Dirección", value: input.address1 },
+          { name: "Datos adicionales", value: input.address2 || "" },
+          { name: "Ciudad", value: input.city },
+          { name: "Departamento", value: input.province },
+          { name: "País", value: input.country || "Colombia" },
+          {
+            name: "Descuento aplicado",
+            value:
+              input.discountLabel ||
+              (cleanedTotal
+                ? `Total del pedido: ${cleanedTotal}`
+                : "Sin descuento registrado"),
+          },
+        ],
         shipping_address: {
           first_name: firstName,
           last_name: lastName,
-          phone: formattedPhone!,
-          address1: input.address1!,
+          phone: formattedPhone,
+          address1: input.address1,
           address2: input.address2 || "",
-          city: input.city!,
-          province: input.province!,
+          city: input.city,
+          province: input.province,
           country: input.country || "Colombia",
           zip: input.zip || "",
         },
-        phone: formattedPhone!,
-        // Usamos el payload de cliente determinado dinámicamente
+        phone: formattedPhone,
         customer: customerPayload,
       },
     };
@@ -907,32 +846,29 @@ server.registerTool(
 
       if (!response.ok) {
         const errorData = await response.json();
-        // Lanzamos el error para que sea capturado por el bloque catch
         throw new Error(
-          `Error al crear el pedido: ${
-            response.statusText
-          }. Detalles: ${JSON.stringify(errorData)}`
+          `Error creando pedido: ${response.statusText} (${
+            response.status
+          }). ${JSON.stringify(errorData)}`
         );
       }
 
       const data = await response.json();
-      const newOrder = data.order;
+      const order = data.order;
 
       const result = {
         message: "✅ Pedido creado exitosamente en Shopify.",
-        orderId: newOrder.id,
-        orderName: newOrder.name,
+        orderId: order.id,
+        orderName: order.name,
+        details: `Cliente: ${input.name} (${formattedPhone})`,
       };
+
       return {
         content: [{ type: "text", text: result.message }],
         structuredContent: result,
       };
     } catch (error) {
-      console.error(
-        "❌ Error al crear pedido:",
-        error instanceof Error ? error.message : error
-      );
-
+      console.error("❌ Error creando pedido:", error);
       const result = {
         message: "❌ Error al crear el pedido en Shopify.",
         details: error instanceof Error ? error.message : "Error desconocido",
@@ -944,6 +880,7 @@ server.registerTool(
     }
   }
 );
+
 // ----------------------------------------------------
 // FIN DE LA HERRAMIENTA 5
 // ----------------------------------------------------
