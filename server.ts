@@ -1723,7 +1723,7 @@ server.registerTool(
 // ----------------------------------------------------
 
 // --------------------------------------------------------------
-// HERRAMIENTA 11: Buscar borradores recientes desde un ID base
+// HERRAMIENTA: Buscar borradores recientes desde un ID base
 // --------------------------------------------------------------
 server.registerTool(
   "findDraftOrders",
@@ -1752,6 +1752,7 @@ server.registerTool(
           numericId: z.number(),
           name: z.string(),
           createdAt: z.string(),
+          updatedAt: z.string(),
           totalPrice: z.string(),
           status: z.string(),
         })
@@ -1770,14 +1771,12 @@ server.registerTool(
       };
     }
 
-    // --- Construcción dinámica del query ---
-    // Si pasas sinceId, usamos "after" con cursor basado en ID.
-    // Shopify GraphQL usa cursores, así que podemos simularlo.
+    // --- QUERY corregido ---
     const gqlQuery = `
       {
         draftOrders(
           first: ${limit},
-          sortKey: CREATED_AT,
+          sortKey: UPDATED_AT,
           reverse: true
         ) {
           edges {
@@ -1786,6 +1785,7 @@ server.registerTool(
               id
               name
               createdAt
+              updatedAt
               status
               totalPrice
             }
@@ -1822,7 +1822,7 @@ server.registerTool(
       const edges = data.data?.draftOrders?.edges ?? [];
       let draftOrders = edges.map((e: any) => e.node);
 
-      // 🔹 Si se pasó sinceId, filtra solo los con ID mayor
+      // 🔹 Si se pasó sinceId, filtrar por ID numérico
       if (sinceId) {
         const numericSince = Number(sinceId);
         draftOrders = draftOrders.filter((d: any) => {
@@ -1831,19 +1831,20 @@ server.registerTool(
         });
       }
 
-      // 🔹 Formatear salida con ID limpio
+      // 🔹 Formatear salida
       const formatted = draftOrders.map((d: any) => ({
         id: d.id,
         numericId: Number(d.id.split("/").pop()),
         name: d.name,
         createdAt: d.createdAt,
+        updatedAt: d.updatedAt,
         status: d.status,
         totalPrice: d.totalPrice,
       }));
 
       const msg =
         formatted.length > 0
-          ? `✅ Se encontraron ${formatted.length} borradores más recientes.`
+          ? `✅ Se encontraron ${formatted.length} borradores recientes.`
           : sinceId
           ? `⚠️ No hay borradores más nuevos que el ID ${sinceId}.`
           : "⚠️ No se encontraron borradores.";
