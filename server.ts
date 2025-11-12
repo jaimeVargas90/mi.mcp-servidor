@@ -1723,19 +1723,23 @@ server.registerTool(
 // ----------------------------------------------------
 
 // --------------------------------------------------------------
-// HERRAMIENTA 11: Buscar borradores por teléfono o nombre
+// HERRAMIENTA: Buscar borradores por ID de cliente, teléfono o nombre
 // --------------------------------------------------------------
 server.registerTool(
   "findDraftOrders",
   {
-    title: "Buscar Borradores por Teléfono o Nombre",
+    title: "Buscar borradores de pedido (por ID, teléfono o nombre)",
     description:
-      "Busca pedidos en borrador (status=open) filtrando por número de teléfono o nombre del cliente.",
+      "Busca borradores de pedido abiertos de un cliente usando su ID, teléfono o nombre.",
     inputSchema: {
+      customerId: z
+        .number()
+        .optional()
+        .describe("ID numérico del cliente en Shopify."),
       phone: z
         .string()
         .optional()
-        .describe("Teléfono o WhatsApp (300... o +57...)."),
+        .describe("Teléfono o WhatsApp del cliente (300... o +57...)."),
       name: z.string().optional().describe("Nombre o apellido del cliente."),
     },
     outputSchema: {
@@ -1745,28 +1749,92 @@ server.registerTool(
           name: z.string(),
           totalPrice: z.string(),
           createdAt: z.string(),
-          phone: z.string().optional(),
           customerName: z.string().optional(),
+          phone: z.string().optional(),
         })
       ),
     },
   },
 
-  async ({ phone, name }) => {
+  async ({ customerId, phone, name }) => {
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
 
     if (!storeUrl || !apiToken) {
       return {
-        content: [{ type: "text", text: "❌ Error: Shopify no configurado." }],
+        content: [
+          { type: "text", text: "❌ Error: Falta configuración de Shopify." },
+        ],
         structuredContent: { draftOrders: [] },
       };
     }
 
+    // 🧩 1. Si tenemos el customerId, usamos directamente ese endpoint (más preciso)
+    if (customerId) {
+      try {
+        const draftApiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders.json?customer_id=${customerId}&status=open&limit=20`;
+        const draftResponse = await fetch(draftApiUrl, {
+          method: "GET",
+          headers: {
+            "X-Shopify-Access-Token": apiToken,
+            "Content-Type": "application/json",
+          },
+        });
+
+        const data = await draftResponse.json();
+        const drafts = data?.draft_orders ?? [];
+
+        if (drafts.length === 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "⚠️ No se encontraron borradores abiertos para este cliente.",
+              },
+            ],
+            structuredContent: { draftOrders: [] },
+          };
+        }
+
+        const formatted = drafts.map((d: any) => ({
+          id: d.id,
+          name: d.name,
+          totalPrice: d.total_price,
+          createdAt: d.created_at,
+          customerName: `${d.customer?.first_name || ""} ${
+            d.customer?.last_name || ""
+          }`.trim(),
+          phone: d.shipping_address?.phone || d.customer?.phone || "",
+        }));
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `✅ Se encontraron ${formatted.length} borradores abiertos para el cliente #${customerId}.`,
+            },
+          ],
+          structuredContent: { draftOrders: formatted },
+        };
+      } catch (err) {
+        console.error("Error buscando borradores por customer_id:", err);
+        return {
+          content: [
+            { type: "text", text: "❌ Error al consultar borradores por ID." },
+          ],
+          structuredContent: { draftOrders: [] },
+        };
+      }
+    }
+
+    // 🧩 2. Si no hay customerId, intentamos búsqueda por teléfono o nombre
     if (!phone && !name) {
       return {
         content: [
-          { type: "text", text: "❗ Debes proporcionar 'phone' o 'name'." },
+          {
+            type: "text",
+            text: "⚠️ Debes enviar al menos 'customerId', 'phone' o 'name'.",
+          },
         ],
         structuredContent: { draftOrders: [] },
       };
@@ -1784,9 +1852,18 @@ server.registerTool(
     }
 
     try {
-      // 🔹 Obtener los borradores abiertos (limitamos para eficiencia)
-      const draftApiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders.json?status=open&limit=50`;
-      const draftResponse = await fetch(draftApiUrl, {
+      // Buscar clientes por teléfono o nombre para obtener su ID
+      const queryParts: string[] = [];
+      if (formattedPhone) queryParts.push(`phone:${formattedPhone}`);
+      if (name && name.trim()) {
+        const cleanName = name.trim();
+        queryParts.push(`name:"${cleanName}" OR name:${cleanName}*`);
+      }
+
+      const query = encodeURIComponent(queryParts.join(" OR "));
+      const searchUrl = `https://${storeUrl}/admin/api/2024-04/customers/search.json?query=${query}&limit=5`;
+
+      const customerRes = await fetch(searchUrl, {
         method: "GET",
         headers: {
           "X-Shopify-Access-Token": apiToken,
@@ -1794,92 +1871,59 @@ server.registerTool(
         },
       });
 
-      const raw = await draftResponse.text();
-      let draftData: any;
-      try {
-        draftData = JSON.parse(raw);
-      } catch {
+      const customersData = await customerRes.json();
+      const customers = customersData?.customers ?? [];
+
+      if (customers.length === 0) {
         return {
           content: [
             {
               type: "text",
-              text: "⚠️ Respuesta no válida de Shopify (no JSON).",
+              text: "⚠️ No se encontró ningún cliente con ese criterio.",
             },
           ],
           structuredContent: { draftOrders: [] },
         };
       }
 
+      // Buscar borradores para el primer cliente coincidente
+      const foundCustomerId = customers[0].id;
+      const draftApiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders.json?customer_id=${foundCustomerId}&status=open&limit=20`;
+      const draftRes = await fetch(draftApiUrl, {
+        method: "GET",
+        headers: {
+          "X-Shopify-Access-Token": apiToken,
+          "Content-Type": "application/json",
+        },
+      });
+
+      const draftData = await draftRes.json();
       const drafts = draftData?.draft_orders ?? [];
 
-      // 🔹 Filtro por teléfono
-      let filteredDrafts = drafts;
-      if (formattedPhone) {
-        filteredDrafts = drafts.filter((d: any) => {
-          const shipPhone = d.shipping_address?.phone || "";
-          const notePhones = (d.note_attributes || [])
-            .map((n: any) => `${n.value}`.toLowerCase())
-            .join(" ");
-          return (
-            shipPhone.includes(formattedPhone) ||
-            notePhones.includes(formattedPhone.replace("+57", "")) ||
-            notePhones.includes(formattedPhone)
-          );
-        });
-      }
-
-      // 🔹 Si no hay resultados por teléfono, probar por nombre
-      if ((!filteredDrafts || filteredDrafts.length === 0) && name) {
-        const lowerName = name
-          .toLowerCase()
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, ""); // quita acentos
-        filteredDrafts = drafts.filter((d: any) => {
-          const custName = `${d.customer?.first_name || ""} ${
-            d.customer?.last_name || ""
-          }`
-            .toLowerCase()
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, ""); // quita acentos
-          const shippingName = (d.shipping_address?.name || "")
-            .toLowerCase()
-            .normalize("NFD")
-            .replace(/[\u0300-\u036f]/g, ""); // quita acentos
-          return (
-            custName.includes(lowerName) || shippingName.includes(lowerName)
-          );
-        });
-      }
-
-      // 🔹 Formatear resultados
-      const formatted = filteredDrafts.map((d: any) => ({
+      const formatted = drafts.map((d: any) => ({
         id: d.id,
         name: d.name,
-        totalPrice: d.total_price || "0",
+        totalPrice: d.total_price,
         createdAt: d.created_at,
-        phone: d.shipping_address?.phone || "",
-        customerName: d.customer
-          ? `${d.customer.first_name || ""} ${
-              d.customer.last_name || ""
-            }`.trim()
-          : d.shipping_address?.name || "",
+        customerName: `${d.customer?.first_name || ""} ${
+          d.customer?.last_name || ""
+        }`.trim(),
+        phone: d.shipping_address?.phone || d.customer?.phone || "",
       }));
 
       const msg =
         formatted.length > 0
-          ? `✅ Se encontraron ${formatted.length} borradores coincidentes.`
-          : "⚠️ No se encontraron borradores con ese criterio.";
+          ? `✅ Se encontraron ${formatted.length} borradores para el cliente "${customers[0].first_name} ${customers[0].last_name}".`
+          : "⚠️ El cliente no tiene borradores abiertos.";
 
       return {
         content: [{ type: "text", text: msg }],
         structuredContent: { draftOrders: formatted },
       };
-    } catch (err) {
-      console.error("Error buscando borradores:", err);
+    } catch (error) {
+      console.error("Error al buscar borradores:", error);
       return {
-        content: [
-          { type: "text", text: "❌ Error al buscar borradores en Shopify." },
-        ],
+        content: [{ type: "text", text: "❌ Error al consultar borradores." }],
         structuredContent: { draftOrders: [] },
       };
     }
