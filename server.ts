@@ -1830,13 +1830,23 @@ server.registerTool(
 
       // 🔹 Si no hay resultados por teléfono, probar por nombre
       if ((!filteredDrafts || filteredDrafts.length === 0) && name) {
-        const lowerName = name.toLowerCase();
+        const lowerName = name
+          .toLowerCase()
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, ""); // quita acentos
         filteredDrafts = drafts.filter((d: any) => {
-          const custName = d.customer?.first_name + " " + d.customer?.last_name;
-          const shippingName = d.shipping_address?.name || "";
+          const custName = `${d.customer?.first_name || ""} ${
+            d.customer?.last_name || ""
+          }`
+            .toLowerCase()
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, ""); // quita acentos
+          const shippingName = (d.shipping_address?.name || "")
+            .toLowerCase()
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, ""); // quita acentos
           return (
-            custName.toLowerCase().includes(lowerName) ||
-            shippingName.toLowerCase().includes(lowerName)
+            custName.includes(lowerName) || shippingName.includes(lowerName)
           );
         });
       }
