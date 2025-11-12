@@ -1723,20 +1723,20 @@ server.registerTool(
 // ----------------------------------------------------
 
 // --------------------------------------------------------------
-// NUEVA HERRAMIENTA 11: BUSCAR BORRADORES POR TELÉFONO Y NOMBRE
+// HERRAMIENTA 11: Buscar borradores por teléfono o nombre
 // --------------------------------------------------------------
 server.registerTool(
   "findDraftOrders",
   {
     title: "Buscar Borradores por Teléfono o Nombre",
     description:
-      "Busca borradores de pedido 'abiertos' de un cliente usando su teléfono o su nombre completo/parcial.",
+      "Busca pedidos en borrador (status=open) filtrando por número de teléfono o nombre del cliente.",
     inputSchema: {
-      phone: z.string().optional().describe("Tel/WhatsApp (300... o +57...)."),
-      name: z
+      phone: z
         .string()
         .optional()
-        .describe("Nombre/apellido (ej. 'Juan', 'Pérez')."),
+        .describe("Teléfono o WhatsApp (300... o +57...)."),
+      name: z.string().optional().describe("Nombre o apellido del cliente."),
     },
     outputSchema: {
       draftOrders: z.array(
@@ -1745,6 +1745,8 @@ server.registerTool(
           name: z.string(),
           totalPrice: z.string(),
           createdAt: z.string(),
+          phone: z.string().optional(),
+          customerName: z.string().optional(),
         })
       ),
     },
@@ -1753,9 +1755,10 @@ server.registerTool(
   async ({ phone, name }) => {
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
+
     if (!storeUrl || !apiToken) {
       return {
-        content: [{ type: "text", text: "Error: Shopify no configurado." }],
+        content: [{ type: "text", text: "❌ Error: Shopify no configurado." }],
         structuredContent: { draftOrders: [] },
       };
     }
@@ -1763,13 +1766,13 @@ server.registerTool(
     if (!phone && !name) {
       return {
         content: [
-          { type: "text", text: "Debes proporcionar 'phone' o 'name'." },
+          { type: "text", text: "❗ Debes proporcionar 'phone' o 'name'." },
         ],
         structuredContent: { draftOrders: [] },
       };
     }
 
-    // 1) Normalizar teléfono (E.164)
+    // 🔹 Normalizar teléfono
     let formattedPhone = phone;
     if (formattedPhone) {
       formattedPhone = formattedPhone.replace(/[\s\-\(\)]+/g, "");
@@ -1780,77 +1783,9 @@ server.registerTool(
       }
     }
 
-    // 2) Armar query en partes (sin codificar aún)
-    const parts: string[] = [];
-    if (formattedPhone) {
-      // ¡OJO! No codifiques aquí: codificaremos la query completa más abajo
-      parts.push(`phone:${formattedPhone}`);
-    }
-    if (name && name.trim()) {
-      const n = name.trim();
-      // Búsqueda combinada: exacta entre comillas y parcial con wildcard
-      // Shopify hace tokenización de name:, pero el wildcard ayuda con parciales
-      // Si el nombre tiene espacios, las comillas ayudan a mantener la frase
-      parts.push(`name:"${n}" OR name:${n}*`);
-    }
-
-    // 3) Construir y CODIFICAR la query completa
-    const rawQuery = parts.join(" OR ");
-    const encodedQuery = encodeURIComponent(rawQuery);
-
-    // 4) Limitar resultados del search de clientes
-    const searchUrl = `https://${storeUrl}/admin/api/2024-04/customers/search.json?query=${encodedQuery}&limit=5`;
-
     try {
-      const customerResponse = await fetch(searchUrl, {
-        method: "GET",
-        headers: {
-          "X-Shopify-Access-Token": apiToken,
-          "Content-Type": "application/json",
-        },
-      });
-
-      // Manejo seguro por si Shopify devuelve HTML
-      const rawText = await customerResponse.text();
-      let customerData: any;
-      try {
-        customerData = JSON.parse(rawText);
-      } catch {
-        return {
-          content: [
-            {
-              type: "text",
-              text: "Respuesta no-JSON de Shopify al buscar clientes.",
-            },
-          ],
-          structuredContent: { draftOrders: [] },
-        };
-      }
-
-      const customers = customerData?.customers ?? [];
-      if (customers.length === 0) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: "No se encontró ningún cliente con ese criterio.",
-            },
-          ],
-          structuredContent: { draftOrders: [] },
-        };
-      }
-
-      // Opción: si hay varios, tomar el que mejor calza por teléfono exacto
-      let customerId = customers[0].id;
-      if (formattedPhone) {
-        const exact = customers.find(
-          (c: any) => (c.phone || "") === formattedPhone
-        );
-        if (exact) customerId = exact.id;
-      }
-
-      // 5) Buscar draft orders abiertos de ese cliente
-      const draftApiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders.json?customer_id=${customerId}&status=open&limit=10`;
+      // 🔹 Obtener los borradores abiertos (limitamos para eficiencia)
+      const draftApiUrl = `https://${storeUrl}/admin/api/2024-04/draft_orders.json?status=open&limit=50`;
       const draftResponse = await fetch(draftApiUrl, {
         method: "GET",
         headers: {
@@ -1859,42 +1794,82 @@ server.registerTool(
         },
       });
 
-      const draftRaw = await draftResponse.text();
+      const raw = await draftResponse.text();
       let draftData: any;
       try {
-        draftData = JSON.parse(draftRaw);
+        draftData = JSON.parse(raw);
       } catch {
         return {
           content: [
             {
               type: "text",
-              text: "Respuesta no-JSON de Shopify al listar borradores.",
+              text: "⚠️ Respuesta no válida de Shopify (no JSON).",
             },
           ],
           structuredContent: { draftOrders: [] },
         };
       }
 
-      const openDrafts = draftData?.draft_orders ?? [];
-      const formattedDrafts = openDrafts.map((d: any) => ({
+      const drafts = draftData?.draft_orders ?? [];
+
+      // 🔹 Filtro por teléfono
+      let filteredDrafts = drafts;
+      if (formattedPhone) {
+        filteredDrafts = drafts.filter((d: any) => {
+          const shipPhone = d.shipping_address?.phone || "";
+          const notePhones = (d.note_attributes || [])
+            .map((n: any) => `${n.value}`.toLowerCase())
+            .join(" ");
+          return (
+            shipPhone.includes(formattedPhone) ||
+            notePhones.includes(formattedPhone.replace("+57", "")) ||
+            notePhones.includes(formattedPhone)
+          );
+        });
+      }
+
+      // 🔹 Si no hay resultados por teléfono, probar por nombre
+      if ((!filteredDrafts || filteredDrafts.length === 0) && name) {
+        const lowerName = name.toLowerCase();
+        filteredDrafts = drafts.filter((d: any) => {
+          const custName = d.customer?.first_name + " " + d.customer?.last_name;
+          const shippingName = d.shipping_address?.name || "";
+          return (
+            custName.toLowerCase().includes(lowerName) ||
+            shippingName.toLowerCase().includes(lowerName)
+          );
+        });
+      }
+
+      // 🔹 Formatear resultados
+      const formatted = filteredDrafts.map((d: any) => ({
         id: d.id,
         name: d.name,
-        totalPrice: d.total_price,
+        totalPrice: d.total_price || "0",
         createdAt: d.created_at,
+        phone: d.shipping_address?.phone || "",
+        customerName: d.customer
+          ? `${d.customer.first_name || ""} ${
+              d.customer.last_name || ""
+            }`.trim()
+          : d.shipping_address?.name || "",
       }));
 
       const msg =
-        formattedDrafts.length > 0
-          ? `Se encontraron ${formattedDrafts.length} borradores abiertos.`
-          : "El cliente no tiene borradores abiertos.";
+        formatted.length > 0
+          ? `✅ Se encontraron ${formatted.length} borradores coincidentes.`
+          : "⚠️ No se encontraron borradores con ese criterio.";
 
       return {
         content: [{ type: "text", text: msg }],
-        structuredContent: { draftOrders: formattedDrafts },
+        structuredContent: { draftOrders: formatted },
       };
     } catch (err) {
+      console.error("Error buscando borradores:", err);
       return {
-        content: [{ type: "text", text: "Error al buscar borradores." }],
+        content: [
+          { type: "text", text: "❌ Error al buscar borradores en Shopify." },
+        ],
         structuredContent: { draftOrders: [] },
       };
     }
