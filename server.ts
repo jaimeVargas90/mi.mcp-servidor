@@ -1723,26 +1723,26 @@ server.registerTool(
 // ----------------------------------------------------
 
 // --------------------------------------------------------------
-// HERRAMIENTA 11: Buscar borradores recientes con GraphQL + Filtro + ID limpio
+// HERRAMIENTA 11: Buscar borradores recientes desde un ID base
 // --------------------------------------------------------------
 server.registerTool(
   "findDraftOrders",
   {
-    title: "Listar borradores recientes (GraphQL ordenado)",
+    title: "Listar borradores recientes desde un ID base",
     description:
-      "Obtiene los borradores más recientes de Shopify (ordenados de más nuevo a más viejo) y permite filtrar por texto en el contenido.",
+      "Obtiene los borradores de pedido más recientes desde un ID específico, usando la API GraphQL de Shopify. Permite limitar la cantidad de resultados y ver sus IDs.",
     inputSchema: {
       limit: z
         .number()
         .optional()
         .describe(
-          "Cantidad máxima de borradores a devolver (por defecto 50, máximo 250)."
+          "Cantidad máxima de borradores (por defecto 50, máximo 250)."
         ),
-      search: z
+      sinceId: z
         .string()
         .optional()
         .describe(
-          "Texto para filtrar (por ejemplo nombre, teléfono, nota, etc.)."
+          "ID del último borrador conocido (ej. 1016781471780). Si se envía, traerá solo los creados después de ese ID."
         ),
     },
     outputSchema: {
@@ -1759,7 +1759,7 @@ server.registerTool(
     },
   },
 
-  async ({ limit = 50, search }) => {
+  async ({ limit = 50, sinceId }) => {
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
 
@@ -1770,21 +1770,25 @@ server.registerTool(
       };
     }
 
-    // --- QUERY GRAPHQL ---
+    // --- Construcción dinámica del query ---
+    // Si pasas sinceId, usamos "after" con cursor basado en ID.
+    // Shopify GraphQL usa cursores, así que podemos simularlo.
     const gqlQuery = `
       {
-        draftOrders(first: ${limit}, sortKey: CREATED_AT, reverse: true) {
-          nodes {
-            id
-            name
-            createdAt
-            status
-            totalPrice
-            noteAttributes {
+        draftOrders(
+          first: ${limit},
+          sortKey: CREATED_AT,
+          reverse: true
+        ) {
+          edges {
+            cursor
+            node {
+              id
               name
-              value
+              createdAt
+              status
+              totalPrice
             }
-            tags
           }
         }
       }
@@ -1804,21 +1808,33 @@ server.registerTool(
       );
 
       const data = await response.json();
-      const draftOrders = data.data?.draftOrders?.nodes ?? [];
 
-      // 🔹 Filtrado local por texto si se especifica "search"
-      let filtered = draftOrders;
-      if (search) {
-        const query = search.toLowerCase();
-        filtered = draftOrders.filter((d: any) =>
-          JSON.stringify(d).toLowerCase().includes(query)
-        );
+      if (data.errors) {
+        console.error("❌ Error GraphQL:", data.errors);
+        return {
+          content: [
+            { type: "text", text: "Error al consultar borradores (GraphQL)." },
+          ],
+          structuredContent: { draftOrders: [] },
+        };
       }
 
-      // 🔹 Formatear salida (extraer ID numérico)
-      const formatted = filtered.map((d: any) => ({
+      const edges = data.data?.draftOrders?.edges ?? [];
+      let draftOrders = edges.map((e: any) => e.node);
+
+      // 🔹 Si se pasó sinceId, filtra solo los con ID mayor
+      if (sinceId) {
+        const numericSince = Number(sinceId);
+        draftOrders = draftOrders.filter((d: any) => {
+          const numId = Number(d.id.split("/").pop());
+          return numId > numericSince;
+        });
+      }
+
+      // 🔹 Formatear salida con ID limpio
+      const formatted = draftOrders.map((d: any) => ({
         id: d.id,
-        numericId: Number(d.id.split("/").pop()), // 👉 convierte "gid://shopify/DraftOrder/12345" → 12345
+        numericId: Number(d.id.split("/").pop()),
         name: d.name,
         createdAt: d.createdAt,
         status: d.status,
@@ -1827,8 +1843,10 @@ server.registerTool(
 
       const msg =
         formatted.length > 0
-          ? `✅ Se encontraron ${formatted.length} borradores.`
-          : "⚠️ No se encontraron borradores que coincidan con la búsqueda.";
+          ? `✅ Se encontraron ${formatted.length} borradores más recientes.`
+          : sinceId
+          ? `⚠️ No hay borradores más nuevos que el ID ${sinceId}.`
+          : "⚠️ No se encontraron borradores.";
 
       return {
         content: [{ type: "text", text: msg }],
