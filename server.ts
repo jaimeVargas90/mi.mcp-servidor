@@ -1722,7 +1722,7 @@ server.registerTool(
 // FIN DE LA HERRAMIENTA 10
 // ----------------------------------------------------
 
-/// ----------------------------------------------------
+// ----------------------------------------------------
 // NUEVA HERRAMIENTA 12: BUSCAR BORRADORES POR ID DE CLIENTE
 // ----------------------------------------------------
 server.registerTool(
@@ -1740,7 +1740,7 @@ server.registerTool(
       limit: z
         .number()
         .optional()
-        .default(250) // <--- CORRECCIÓN 1: Límite por defecto
+        .default(250)
         .describe("Límite de borradores a devolver para este cliente."),
     },
     outputSchema: {
@@ -1759,7 +1759,6 @@ server.registerTool(
   },
 
   async ({ customerId, limit = 250 }) => {
-    // <--- CORRECCIÓN 1: Límite por defecto
     const storeUrl = process.env.SHOPIFY_STORE_URL;
     const apiToken = process.env.SHOPIFY_API_TOKEN;
 
@@ -1770,12 +1769,14 @@ server.registerTool(
       };
     }
 
+    // --- CORRECCIÓN: Consulta minificada a una sola línea ---
+    // Se eliminan todos los saltos de línea y espacios extra para evitar errores de sintaxis
     const gqlQuery = `
       query findDraftsByCustomer($limit: Int!, $query: String!) {
         draftOrders(
           first: $limit,
           query: $query,
-          sortKey: ID,       // <--- CORRECCIÓN 2: Usar ID en lugar de CREATED_AT
+          sortKey: ID,
           reverse: true
         ) {
           edges {
@@ -1790,7 +1791,7 @@ server.registerTool(
           }
         }
       }
-    `;
+    `.replace(/\s+/g, " "); // <-- Esta es la magia: reemplaza newlines y espacios
 
     try {
       const response = await fetch(
@@ -1814,7 +1815,6 @@ server.registerTool(
       const data = await response.json();
 
       if (data.errors) {
-        // Este log ahora será más detallado si vuelve a fallar
         console.error(
           "❌ Error GraphQL:",
           JSON.stringify(data.errors, null, 2)
