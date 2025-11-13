@@ -1723,14 +1723,14 @@ server.registerTool(
 // ----------------------------------------------------
 
 // ----------------------------------------------------
-// HERRAMIENTA 12: BUSCAR BORRADORES POR ID DE CLIENTE (CON DETALLES)
+// HERRAMIENTA 12: BUSCAR BORRADORES POR ID DE CLIENTE
 // ----------------------------------------------------
 server.registerTool(
   "findDraftsByCustomerId",
   {
-    title: "Buscar Borradores por ID de Cliente (con detalles)",
+    title: "Buscar Borradores por ID de Cliente",
     description:
-      "Busca todos los borradores de pedido asociados a un ID de cliente, incluyendo el nombre, dirección y notas del cliente.",
+      "Busca todos los borradores de pedido (borradores) asociados a un ID de cliente específico.",
     inputSchema: {
       customerId: z
         .string()
@@ -1743,8 +1743,6 @@ server.registerTool(
         .default(250)
         .describe("Límite de borradores a devolver para este cliente."),
     },
-
-    // --- El outputSchema está bien como lo definimos ---
     outputSchema: {
       draftOrders: z.array(
         z.object({
@@ -1755,19 +1753,6 @@ server.registerTool(
           updatedAt: z.string(),
           totalPrice: z.string(),
           status: z.string(),
-          shippingAddress: z
-            .object({
-              name: z.string().nullable(),
-              address1: z.string().nullable(),
-              address2: z.string().nullable(),
-              city: z.string().nullable(),
-              province: z.string().nullable(),
-              phone: z.string().nullable(),
-            })
-            .nullable(),
-          noteAttributes: z
-            .record(z.string(), z.string().nullable())
-            .nullable(),
         })
       ),
     },
@@ -1784,7 +1769,6 @@ server.registerTool(
       };
     }
 
-    // --- 💡 CAMBIO 1: gqlQuery (Usamos 'customAttributes' con 'key') ---
     const gqlQuery = `
       query findDraftsByCustomer($limit: Int!, $query: String!) {
         draftOrders(
@@ -1801,20 +1785,6 @@ server.registerTool(
               updatedAt
               status
               totalPrice
-              
-              shippingAddress {
-                name
-                address1
-                address2
-                city
-                province
-                phone
-              }
-              
-              customAttributes {
-                key
-                value
-              }
             }
           }
         }
@@ -1858,46 +1828,23 @@ server.registerTool(
       const edges = data.data?.draftOrders?.edges ?? [];
       const draftOrders = edges.map((e: any) => e.node);
 
-      // --- 💡 CAMBIO 2: formatted (Leemos 'customAttributes' y 'key') ---
-      const formatted = draftOrders.map((d: any) => {
-        // Transformamos el array [{key: "K", value: "V"}]
-        // en un objeto { "K": "V" }
-        const notes =
-          d.customAttributes?.reduce((acc: any, attr: any) => {
-            if (attr.key) {
-              // <-- Usamos .key
-              acc[attr.key] = attr.value;
-            }
-            return acc;
-          }, {}) || null;
+      // 🔹 Formatear salida (con (d: any) para TypeScript)
+      const formatted = draftOrders.map((d: any) => ({
+        id: d.id,
+        numericId: Number(d.id.split("/").pop()),
+        name: d.name,
+        createdAt: d.createdAt,
+        updatedAt: d.updatedAt,
+        status: d.status,
+        totalPrice: d.totalPrice,
+      }));
 
-        return {
-          id: d.id,
-          numericId: Number(d.id.split("/").pop()),
-          name: d.name,
-          createdAt: d.createdAt,
-          updatedAt: d.updatedAt,
-          status: d.status,
-          totalPrice: d.totalPrice,
-
-          shippingAddress: d.shippingAddress
-            ? {
-                name: d.shippingAddress.name,
-                address1: d.shippingAddress.address1,
-                address2: d.shippingAddress.address2,
-                city: d.shippingAddress.city,
-                province: d.shippingAddress.province,
-                phone: d.shippingAddress.phone,
-              }
-            : null,
-
-          noteAttributes: notes, // Mantenemos este nombre para el 'output'
-        };
-      });
-
-      // Mantenemos la solución del JSON.stringify para evitar alucinaciones
+      // --- 💡 LA SOLUCIÓN (Igual que listShopifyProducts) 💡 ---
+      // Convertimos el resultado en un string JSON
       const jsonString = JSON.stringify(formatted, null, 2);
 
+      // Devolvemos el JSON crudo en el 'content.text'
+      // La IA ahora estará OBLIGADA a leer estos datos.
       return {
         content: [{ type: "text", text: jsonString }],
         structuredContent: { draftOrders: formatted },
@@ -1921,6 +1868,7 @@ server.registerTool(
 // ----------------------------------------------------
 // FIN DE LA HERRAMIENTA 12
 // ----------------------------------------------------
+
 // ----------------------------------------------------
 //  Configurar Express para "servir" el servidor MCP
 // ----------------------------------------------------
