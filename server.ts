@@ -1723,14 +1723,14 @@ server.registerTool(
 // ----------------------------------------------------
 
 // ----------------------------------------------------
-// NUEVA HERRAMIENTA 12: BUSCAR BORRADORES POR ID DE CLIENTE
+// HERRAMIENTA 12: BUSCAR BORRADORES POR ID DE CLIENTE (CON DETALLES)
 // ----------------------------------------------------
 server.registerTool(
   "findDraftsByCustomerId",
   {
-    title: "Buscar Borradores por ID de Cliente",
+    title: "Buscar Borradores por ID de Cliente (con detalles)",
     description:
-      "Busca todos los borradores de pedido (borradores) asociados a un ID de cliente específico.",
+      "Busca todos los borradores de pedido asociados a un ID de cliente, incluyendo el nombre, dirección y notas del cliente.",
     inputSchema: {
       customerId: z
         .string()
@@ -1743,6 +1743,8 @@ server.registerTool(
         .default(250)
         .describe("Límite de borradores a devolver para este cliente."),
     },
+
+    // --- 💡 CAMBIO 1: outputSchema (Añadimos los nuevos campos) ---
     outputSchema: {
       draftOrders: z.array(
         z.object({
@@ -1753,6 +1755,23 @@ server.registerTool(
           updatedAt: z.string(),
           totalPrice: z.string(),
           status: z.string(),
+
+          // Campos añadidos
+          shippingAddress: z
+            .object({
+              name: z.string().nullable(),
+              address1: z.string().nullable(),
+              address2: z.string().nullable(),
+              city: z.string().nullable(),
+              province: z.string().nullable(),
+              phone: z.string().nullable(),
+            })
+            .nullable(),
+
+          // Un objeto { "Nombre": "Manfred", "WhatsApp": "300..." }
+          noteAttributes: z
+            .record(z.string(), z.string().nullable())
+            .nullable(),
         })
       ),
     },
@@ -1769,8 +1788,7 @@ server.registerTool(
       };
     }
 
-    // --- CORRECCIÓN: Consulta minificada a una sola línea ---
-    // Se eliminan todos los saltos de línea y espacios extra para evitar errores de sintaxis
+    // --- 💡 CAMBIO 2: gqlQuery (Pedimos 'shippingAddress' y 'noteAttributes') ---
     const gqlQuery = `
       query findDraftsByCustomer($limit: Int!, $query: String!) {
         draftOrders(
@@ -1787,11 +1805,25 @@ server.registerTool(
               updatedAt
               status
               totalPrice
+              
+              shippingAddress {
+                name
+                address1
+                address2
+                city
+                province
+                phone
+              }
+              
+              noteAttributes {
+                name
+                value
+              }
             }
           }
         }
       }
-    `.replace(/\s+/g, " "); // <-- Esta es la magia: reemplaza newlines y espacios
+    `.replace(/\s+/g, " "); // Consulta minificada
 
     try {
       const response = await fetch(
@@ -1830,43 +1862,60 @@ server.registerTool(
       const edges = data.data?.draftOrders?.edges ?? [];
       const draftOrders = edges.map((e: any) => e.node);
 
-      // 🔹 Formatear salida
-      const formatted = draftOrders.map((d: any) => ({
-        id: d.id,
-        numericId: Number(d.id.split("/").pop()),
-        name: d.name,
-        createdAt: d.createdAt,
-        updatedAt: d.updatedAt,
-        status: d.status,
-        totalPrice: d.totalPrice,
-      }));
+      // --- 💡 CAMBIO 3: formatted (Procesamos los nuevos campos) ---
+      const formatted = draftOrders.map((d: any) => {
+        // Transformamos el array [{name: "N", value: "V"}]
+        // en un objeto { "N": "V" }
+        const notes =
+          d.noteAttributes?.reduce((acc: any, attr: any) => {
+            if (attr.name) {
+              acc[attr.name] = attr.value;
+            }
+            return acc;
+          }, {}) || null;
 
-      // --- 💡 MEJORA APLICADA AQUÍ 💡 ---
-      const count = formatted.length;
-      let msg: string;
+        return {
+          id: d.id,
+          numericId: Number(d.id.split("/").pop()),
+          name: d.name,
+          createdAt: d.createdAt,
+          updatedAt: d.updatedAt,
+          status: d.status,
+          totalPrice: d.totalPrice,
 
-      if (count > 0) {
-        // Extraemos los 'names' (ej. #D331, #D330)
-        const draftNames = formatted.map((d: any) => d.name).join(", ");
+          // Mapeamos los nuevos datos
+          shippingAddress: d.shippingAddress
+            ? {
+                name: d.shippingAddress.name,
+                address1: d.shippingAddress.address1,
+                address2: d.shippingAddress.address2,
+                city: d.shippingAddress.city,
+                province: d.shippingAddress.province,
+                phone: d.shippingAddress.phone,
+              }
+            : null,
 
-        // Creamos un mensaje que YA INCLUYE los nombres
-        msg = `✅ Se encontraron ${count} borradores para el cliente ${customerId}. Los nombres (names) de los borradores son: ${draftNames}.`;
-      } else {
-        msg = `⚠️ No se encontraron borradores para el cliente ${customerId}.`;
-      }
+          noteAttributes: notes,
+        };
+      });
+
+      // Mantenemos la solución del JSON.stringify para evitar alucinaciones
+      const jsonString = JSON.stringify(formatted, null, 2);
 
       return {
-        // La IA recibirá este texto "pre-digerido"
-        content: [{ type: "text", text: msg }],
-
-        // Y los datos estructurados para cualquier pregunta de seguimiento
+        content: [{ type: "text", text: jsonString }],
         structuredContent: { draftOrders: formatted },
       };
     } catch (err) {
       console.error("❌ Error al consultar Shopify GraphQL:", err);
+      let errorMessage = "Error desconocido";
+      if (err instanceof Error) errorMessage = err.message;
       return {
         content: [
-          { type: "text", text: "❌ Error al obtener borradores (GraphQL)." },
+          {
+            type: "text",
+            text: `❌ Error al obtener borradores: ${errorMessage}`,
+          },
         ],
         structuredContent: { draftOrders: [] },
       };
@@ -1876,7 +1925,6 @@ server.registerTool(
 // ----------------------------------------------------
 // FIN DE LA HERRAMIENTA 12
 // ----------------------------------------------------
-
 // ----------------------------------------------------
 //  Configurar Express para "servir" el servidor MCP
 // ----------------------------------------------------
