@@ -1744,7 +1744,7 @@ server.registerTool(
         .describe("Límite de borradores a devolver para este cliente."),
     },
 
-    // --- 💡 CAMBIO 1: outputSchema (Añadimos los nuevos campos) ---
+    // --- El outputSchema está bien como lo definimos ---
     outputSchema: {
       draftOrders: z.array(
         z.object({
@@ -1755,8 +1755,6 @@ server.registerTool(
           updatedAt: z.string(),
           totalPrice: z.string(),
           status: z.string(),
-
-          // Campos añadidos
           shippingAddress: z
             .object({
               name: z.string().nullable(),
@@ -1767,8 +1765,6 @@ server.registerTool(
               phone: z.string().nullable(),
             })
             .nullable(),
-
-          // Un objeto { "Nombre": "Manfred", "WhatsApp": "300..." }
           noteAttributes: z
             .record(z.string(), z.string().nullable())
             .nullable(),
@@ -1788,7 +1784,7 @@ server.registerTool(
       };
     }
 
-    // --- 💡 CAMBIO 2: gqlQuery (Pedimos 'shippingAddress' y 'noteAttributes') ---
+    // --- 💡 CAMBIO 1: gqlQuery (Usamos 'customAttributes' con 'key') ---
     const gqlQuery = `
       query findDraftsByCustomer($limit: Int!, $query: String!) {
         draftOrders(
@@ -1815,8 +1811,8 @@ server.registerTool(
                 phone
               }
               
-              noteAttributes {
-                name
+              customAttributes {
+                key
                 value
               }
             }
@@ -1862,14 +1858,15 @@ server.registerTool(
       const edges = data.data?.draftOrders?.edges ?? [];
       const draftOrders = edges.map((e: any) => e.node);
 
-      // --- 💡 CAMBIO 3: formatted (Procesamos los nuevos campos) ---
+      // --- 💡 CAMBIO 2: formatted (Leemos 'customAttributes' y 'key') ---
       const formatted = draftOrders.map((d: any) => {
-        // Transformamos el array [{name: "N", value: "V"}]
-        // en un objeto { "N": "V" }
+        // Transformamos el array [{key: "K", value: "V"}]
+        // en un objeto { "K": "V" }
         const notes =
-          d.noteAttributes?.reduce((acc: any, attr: any) => {
-            if (attr.name) {
-              acc[attr.name] = attr.value;
+          d.customAttributes?.reduce((acc: any, attr: any) => {
+            if (attr.key) {
+              // <-- Usamos .key
+              acc[attr.key] = attr.value;
             }
             return acc;
           }, {}) || null;
@@ -1883,7 +1880,6 @@ server.registerTool(
           status: d.status,
           totalPrice: d.totalPrice,
 
-          // Mapeamos los nuevos datos
           shippingAddress: d.shippingAddress
             ? {
                 name: d.shippingAddress.name,
@@ -1895,7 +1891,7 @@ server.registerTool(
               }
             : null,
 
-          noteAttributes: notes,
+          noteAttributes: notes, // Mantenemos este nombre para el 'output'
         };
       });
 
