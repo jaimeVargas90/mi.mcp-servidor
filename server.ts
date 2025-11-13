@@ -1841,14 +1841,25 @@ server.registerTool(
         totalPrice: d.totalPrice,
       }));
 
+      // --- 💡 MEJORA APLICADA AQUÍ 💡 ---
       const count = formatted.length;
-      const msg =
-        count > 0
-          ? `✅ Se encontraron ${count} borradores para el cliente ${customerId}.`
-          : `⚠️ No se encontraron borradores para el cliente ${customerId}.`;
+      let msg: string;
+
+      if (count > 0) {
+        // Extraemos los 'names' (ej. #D331, #D330)
+        const draftNames = formatted.map((d: any) => d.name).join(", ");
+
+        // Creamos un mensaje que YA INCLUYE los nombres
+        msg = `✅ Se encontraron ${count} borradores para el cliente ${customerId}. Los nombres (names) de los borradores son: ${draftNames}.`;
+      } else {
+        msg = `⚠️ No se encontraron borradores para el cliente ${customerId}.`;
+      }
 
       return {
+        // La IA recibirá este texto "pre-digerido"
         content: [{ type: "text", text: msg }],
+
+        // Y los datos estructurados para cualquier pregunta de seguimiento
         structuredContent: { draftOrders: formatted },
       };
     } catch (err) {
