@@ -856,15 +856,25 @@ server.registerTool(
       const data = await response.json();
       const order = data.order;
 
+      const orderId = order.id;
+      const orderName = order.name;
+      const orderDatabaseId = order.id;
+
       const result = {
-        message: "✅ Pedido creado exitosamente en Shopify.",
-        orderId: order.id,
-        orderName: order.name,
+        message: `✅ Pedido creado exitosamente en Shopify. ID: ${orderId} | Nombre: ${orderName}`,
+        orderId,
+        orderName,
+        orderDatabaseId,
         details: `Cliente: ${input.name} (${formattedPhone})`,
       };
 
       return {
-        content: [{ type: "text", text: result.message }],
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
         structuredContent: result,
       };
     } catch (error) {
