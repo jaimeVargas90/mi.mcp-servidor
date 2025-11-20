@@ -623,7 +623,7 @@ server.registerTool(
     title:
       "Crear Pedido Shopify (precio final o total con limpieza automática)",
     description:
-      'Crea un pedido en Shopify con estado "pendiente" (pago contra entrega). Puedes enviar el precio unitario (finalPrice) o el precio total del pedido (totalPrice). Si el total incluye símbolos ($, puntos o comas), el servidor lo limpia automáticamente y calcula el unitario.',
+      'Crea un pedido en Shopify con estado "pendiente" (pago contra entrega). Puedes enviar el precio total del pedido (totalPrice).',
     inputSchema: {
       variantId: z
         .number()
